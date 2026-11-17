@@ -1,0 +1,9 @@
+{
+  "name": "sharp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Observation, memory and reasoning trainer. Open index.html in a browser.",
+  "scripts": {
+    "test": "node --test"
+  }
+}
