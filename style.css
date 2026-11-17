@@ -126,3 +126,14 @@ legend { font-weight: 600; padding: 0 4px; }
 .checklist .radio { display: flex; gap: 8px; align-items: flex-start; }
 details { margin: 8px 0; } summary { cursor: pointer; color: var(--accent); }
 @media (max-width: 560px) { .pair-in { grid-template-columns: 1fr; gap: 0; } .score-big { font-size: 44px; } }
+.warn { border-color: var(--bad); background: var(--miss); max-width: 860px; margin: 16px auto 0; }
+.progress { position: relative; height: 22px; background: var(--bg); border-radius: 11px; overflow: hidden; margin: 8px 0; }
+.progress span { position: absolute; inset: 0 auto 0 0; background: var(--accent); opacity: .35; }
+.progress small { position: relative; display: block; text-align: center; line-height: 22px; }
+.countdown { font-size: 28px; font-weight: 800; text-align: center; margin: 0; min-height: 1.3em; font-variant-numeric: tabular-nums; }
+a.button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+@media (max-width: 560px) {
+  nav { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; max-width: 100%; }
+  nav a { flex: none; padding: 4px 8px; }
+  .table th:nth-child(5), .table td:nth-child(5) { display: none; } /* level trend sparkline: hidden on phones */
+}

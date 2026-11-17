@@ -10,15 +10,27 @@
   const ALL_CASES = content.CASES.concat(bank ? bank.CASES : []);
 
   // ---------- state ----------
+  // If the saved data can't be read, keep a copy and refuse to save over it until you decide (see the banner at the bottom of this file).
+  let unreadable = null;
   let state = load();
   function load() {
+    let raw = null;
     try {
-      const s = core.migrate(JSON.parse(localStorage.getItem(STORE_KEY)));
+      raw = localStorage.getItem(STORE_KEY);
+      const s = core.migrate(JSON.parse(raw));
       core.upgradeMissions(s.missions, content.MISSIONS, content.LEGACY_MISSION_TITLES);
       return s;
-    } catch (e) { return core.defaultState(); }
+    } catch (e) {
+      if (raw) {
+        unreadable = raw;
+        const kept = Object.keys(localStorage).some((k) => k.startsWith(STORE_KEY + '.recovered-') && localStorage.getItem(k) === raw);
+        try { if (!kept) localStorage.setItem(STORE_KEY + '.recovered-' + Date.now(), raw); } catch (e2) { /* storage full: the banner still offers a download */ }
+      }
+      return core.defaultState();
+    }
   }
   function save() {
+    if (unreadable) return;
     try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) { alert('Could not save progress. Export your data from Settings to keep a copy.'); }
   }
   // Another tab saved newer progress: reload it, so this tab never writes stale state over it.
@@ -81,6 +93,7 @@
   function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
   function route() {
     clearTimers();
+    editingMission = false;
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     const [, page = '', arg, flag] = location.hash.split('/');
     document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#/' + page));
@@ -477,11 +490,16 @@
     function start(mode) {
       if (mode === 'read') {
         const secs = Math.max(15, Math.round(intro.text.split(' ').length / 3)); // about speaking pace
+        if (canSpeak()) speechSynthesis.cancel();
+        go2.textContent = 'I\'m done reading';
         render(card(h('div', { class: 'visual', html: faces.faceSvg(face, 130) }), h('p', { class: 'muted center' }, intro.setting),
           countdown(secs, quiz), h('p', { class: 'spoken' }, intro.text), go2));
+        go2.focus();
       } else {
         render(card(h('div', { class: 'visual', html: faces.faceSvg(face, 150) }), h('p', { class: 'muted center' }, intro.setting + '. Listen; the words won\'t be shown.'),
-          h('div', { class: 'row center' }, go2, replays > 0 ? replayBtn : null)));
+          h('div', { class: 'row center' }, go2, replays > 0 ? replayBtn : null),
+          h('p', { class: 'muted center' }, 'Can\'t hear anything? ', h('button', { class: 'small', onclick: () => start('read') }, 'Read it instead'))));
+        go2.focus();
         listen();
       }
     }
@@ -500,19 +518,28 @@
   // ---------- Witness ----------
   function runWitness(end) {
     const L = state.levels.witness, rng = core.makeRng(core.freshSeed()), w = witness.makeWitness(rng, L);
-    const stage = h('div', { class: 'visual', html: witness.svg(w) });
-    render(card(h('h3', {}, 'Watch closely. No replays.'), stage, h('p', { class: 'muted' }, 'Label each person as they come in, narrate what they do, and keep track of who holds what.')));
-    const root = stage.querySelector('svg');
-    let i = 0;
-    later(() => {
-      const id = every(() => {
-        i++;
-        witness.applyBeat(root, w, i);
-        if (i >= w.beats.length - 1) { clearInterval(id); later(quiz, w.params.beatMs + 400); }
-      }, w.params.beatMs);
-    }, 1200);
+    render(card(h('h2', {}, 'Witness'), h('p', {}, 'People will come in, handle the objects on the table, and leave. You get one viewing, then questions.'),
+      h('p', { class: 'muted' }, 'Label each person as they come in ("green shirt"), narrate what they do, and keep track of who holds what.'),
+      h('button', { class: 'primary big', autofocus: true, onclick: watch }, 'I\'m ready')));
+    function watch() {
+      const stage = h('div', { class: 'visual', html: witness.svg(w) }), count = h('p', { class: 'countdown', 'aria-live': 'polite' }, '3');
+      render(card(h('h3', {}, 'Watch closely. No replays.'), count, stage));
+      const root = stage.querySelector('svg');
+      let i = 0, n = 3;
+      const tick = every(() => {
+        if (--n > 0) { count.textContent = String(n); return; }
+        clearInterval(tick); count.textContent = 'Go';
+        const id = every(() => {
+          i++;
+          witness.applyBeat(root, w, i);
+          if (i >= w.beats.length - 1) { clearInterval(id); later(quiz, w.params.beatMs + 400); }
+        }, w.params.beatMs);
+      }, 800);
+    }
     function quiz() {
-      const steps = w.questions.map((q) => mcStep({ prompt: q.q, options: q.options, answer: q.answer }));
+      // number answers read best in order (0, 1, 2), not shuffled
+      const sorted = (opts) => (opts.every((o) => /^\d+$/.test(o)) ? opts.slice().sort((a, b) => a - b) : opts);
+      const steps = w.questions.map((q) => mcStep({ prompt: q.q, options: sorted(q.options), answer: q.answer }));
       runSteps(steps, (r, n) => end(r / n, h('div', {}, h('p', {}, r + ' of ' + n + ' correct.'), h('h3', {}, 'What happened'), h('ol', {}, witness.narration(w).map((x) => h('li', {}, x))))));
     }
   }
@@ -520,7 +547,7 @@
   // ---------- Describe It ----------
   function runDescribe(end) {
     const L = state.levels.describe, s = sceneLib.makeScene(core.makeRng(core.freshSeed()), L), svg = sceneLib.sceneSvg(s);
-    const box = h('textarea', { rows: 6, autofocus: true, placeholder: 'rain outside, clock 3:25, red mug on the table, door open, woman in a green shirt with glasses…' });
+    const box = h('textarea', { rows: 6, placeholder: /* no autofocus: on a phone the keyboard would cover the room */ 'rain outside, clock 3:25, red mug on the table, door open, woman in a green shirt with glasses…' });
     const timer = countdown(core.byLevel(L, 90, 40), check);
     render(card(h('h3', {}, 'Describe everything you see'), timer, h('div', { class: 'visual', html: svg }), box,
       h('p', { class: 'muted' }, 'Facts, not stories: colors, counts, times, what\'s open or on. The room stays visible the whole time.'),
@@ -534,7 +561,7 @@
         h('div', { class: 'checklist' }, inv.map((it, k) => h('label', { class: 'radio' }, ticks[k], ' ' + it.label))),
         h('button', { class: 'primary', onclick: () => {
           const got = ticks.filter((t) => t.checked).length;
-          end(got / inv.length, h('div', {}, h('p', {}, 'You described ' + got + ' of ' + inv.length + ' things in the room.'),
+          end(got / inv.length, h('div', {}, h('div', { class: 'visual', html: svg }), h('p', {}, 'You described ' + got + ' of ' + inv.length + ' things in the room.'),
             h('p', { class: 'muted' }, 'Missed: ' + (inv.filter((_, k) => !ticks[k].checked).map((it) => it.label).join(', ') || 'nothing'))));
         } }, 'Score it')));
     }
@@ -584,8 +611,9 @@
     const num = (v) => Number(String(v).replace(/,/g, '').trim());
     const fmt = (x) => (Math.abs(x) >= 1000 ? Math.round(x).toLocaleString() : String(Math.round(x * 1000) / 1000));
     const steps = qs.map((q) => (done, progress) => {
-      const lo = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', autofocus: true, 'aria-label': 'Low end' });
       const hi = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', 'aria-label': 'High end' });
+      const lo = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', autofocus: true, 'aria-label': 'Low end',
+        onkeydown: (ev) => { if (ev.key === 'Enter' && !hi.value.trim()) { ev.preventDefault(); hi.focus(); } } });
       const msg = h('p', { class: 'bad', 'aria-live': 'polite' });
       const form = h('form', { onsubmit: (e) => {
         e.preventDefault();
@@ -672,18 +700,19 @@
   }
   const missionCalib = () => Object.values(state.missions).filter((e) => e.done && e.predict != null && e.hit != null).map((e) => ({ conf: e.predict, correct: e.hit }));
 
+  let editingMission = false; // editing a finished check-in only changes it on "Save changes"
   function missions() {
     const t = today(), e = todaysMission(), m = missionOf(e);
     const due = core.dueCallbacks(state.missions, content.MISSIONS, t);
     const past = Object.entries(state.missions).filter(([d]) => d !== t).sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 30);
     render(
       due.length ? callbackCard(due[0], due.length) : null,
-      card(missionBadge(m), h('h2', {}, m.title), h('p', {}, m.text), e.done ? missionResult(m, e) : checkIn(m, e)),
+      card(missionBadge(m), h('h2', {}, m.title), h('p', {}, m.text), e.done && !editingMission ? missionResult(m, e) : checkIn(m, e)),
       tracksCard(),
       past.length ? card(h('h2', {}, 'Mission log'), h('ul', { class: 'log' }, past.map(([d, x]) => {
         const pm = missionOf(x);
         return h('li', {}, h('b', {}, niceDate(d) + ' · ' + pm.title + (x.done ? ' ✓' : '')), x.done ? h('span', { class: 'muted' }, ' ' + scoreLine(pm, x)) : null,
-          x.items.some((i) => i.trim()) ? h('p', {}, x.items.filter((i) => i.trim()).join(' · ')) : null, x.notes ? h('p', { class: 'muted' }, x.notes) : null);
+          !x.items.some((i) => i.trim()) ? null : x.callback || pm.legacy ? h('p', {}, x.items.filter((i) => i.trim()).join(' · ')) : h('p', { class: 'muted' }, '(what you logged stays hidden until its callback)'), x.notes ? h('p', { class: 'muted' }, x.notes) : null);
       }))) : null);
   }
 
@@ -691,20 +720,22 @@
     const t = today();
     const nodes = [];
     // Predict before doing it: a probability that feeds your calibration score.
+    const predicted = () => h('p', { class: 'muted' }, 'Your prediction: ' + pct(e.predict) + ' that you\'ll reach ' + goalText(m) + '.');
     if (m.score.goal != null) {
-      if (e.predict == null) {
+      if (e.predict == null && !e.done) { // never after you've seen how it went
         const conf = h('input', { type: 'range', min: 5, max: 95, step: 5, value: 50, 'aria-label': 'Chance you reach the goal' });
         const out = h('output', {}, '50%');
         conf.addEventListener('input', () => { out.textContent = conf.value + '%'; });
-        nodes.push(h('div', { class: 'predict' }, h('h3', {}, 'Predict first'), h('p', {}, 'How likely are you to reach the goal: ' + goalText(m) + '?'),
-          h('label', { class: 'conf' }, conf, ' ', out), h('button', { onclick: () => { e.predict = conf.value / 100; save(); missions(); } }, 'Lock in prediction'),
-          h('p', { class: 'muted' }, 'Optional, but it\'s what turns a mission into a calibration check. Lock it in before you start.')));
-      } else nodes.push(h('p', { class: 'muted' }, 'Your prediction: ' + pct(e.predict) + ' that you\'ll reach ' + goalText(m) + '.'));
+        const box = h('div', { class: 'predict' }, h('h3', {}, 'Predict first'), h('p', {}, 'How likely are you to reach the goal: ' + goalText(m) + '?'),
+          h('label', { class: 'conf' }, conf, ' ', out), h('button', { autofocus: true, onclick: () => { e.predict = conf.value / 100; save(); box.replaceWith(predicted()); } }, 'Lock in prediction'),
+          h('p', { class: 'muted' }, 'Optional, but it\'s what turns a mission into a calibration check. Lock it in before you start.'));
+        nodes.push(box);
+      } else if (e.predict != null) nodes.push(predicted());
     }
     // What to log: people go to the People Log; items come back later as a callback.
     const people = m.log && m.log.people ? Array.from({ length: m.log.people }, (_, i) => ({
       name: h('input', { type: 'text', autocomplete: 'off', value: e.people[i] || '', 'aria-label': 'Name ' + (i + 1) }),
-      told: h('input', { type: 'text', autocomplete: 'off', placeholder: 'something they told you', 'aria-label': 'What person ' + (i + 1) + ' told you' }) })) : [];
+      told: h('input', { type: 'text', autocomplete: 'off', value: (e.told || [])[i] || '', placeholder: 'something they told you', 'aria-label': 'What person ' + (i + 1) + ' told you' }) })) : [];
     const items = m.log && m.log.items ? m.log.items.map((label, i) => h('input', { type: 'text', autocomplete: 'off', value: e.items[i] || '', 'aria-label': label, placeholder: label })) : [];
     const max = m.score.max;
     let got = e.got;
@@ -716,22 +747,24 @@
     const totalIn = m.score.outOf ? h('input', { type: 'number', min: 1, inputmode: 'numeric', value: e.total == null ? '' : e.total, 'aria-label': 'Out of how many' }) : null;
     const notes = h('textarea', { rows: 3, value: e.notes, placeholder: 'Optional: what did you notice? What surprised you?', oninput: (ev) => { e.notes = ev.target.value; save(); } });
     const msg = h('p', { class: 'bad', 'aria-live': 'polite' });
-    nodes.push(h('form', { class: 'stack checkin', onsubmit: (ev) => {
+    const form = h('form', { class: 'stack checkin', onsubmit: (ev) => {
       ev.preventDefault();
       const g = pills ? got : gotIn.value === '' ? null : Number(gotIn.value);
       const tot = totalIn ? Number(totalIn.value) : null;
       if (g == null || !(g >= 0) || (!m.score.outOf && g > max) || (m.score.outOf && !(tot >= 1 && g <= tot))) {
-        msg.textContent = m.score.outOf ? 'Enter how many you got and out of how many (at least 1).' : 'Pick your score first.'; return;
+        msg.textContent = !m.score.outOf ? 'Pick your score first.' : tot >= 1 && g > tot ? 'You can\'t get more than the total.' : 'Enter how many you got and out of how many (at least 1).'; return;
       }
-      e.tierBefore = core.unlockedTier(state.missions, content.MISSIONS, m.track);
+      if (!e.done) e.tierBefore = core.unlockedTier(state.missions, content.MISSIONS, m.track); // an edit keeps the original "before"
       e.items = items.map((x) => x.value.trim());
-      const newPeople = people.filter((p) => p.name.value.trim());
-      if (!e.peopleAdded) newPeople.forEach((p) => state.people.push(Object.assign({ id: 'r' + Date.now() + Math.random().toString(36).slice(2, 6), source: 'real', met: t,
+      const named = people.filter((p) => p.name.value.trim());
+      // On an edit, only names not already logged from this check-in are added, so nobody is added twice.
+      const before = new Set(e.people);
+      named.filter((p) => !before.has(p.name.value.trim())).forEach((p) => state.people.push(Object.assign({ id: 'r' + Date.now() + Math.random().toString(36).slice(2, 6), source: 'real', met: t,
         name: p.name.value.trim(), context: 'Mission: ' + m.title, detail: p.told.value.trim(), feature: '' }, core.newCard(t))));
-      e.people = newPeople.map((p) => p.name.value.trim());
-      e.peopleAdded = e.peopleAdded || newPeople.length > 0;
+      e.people = named.map((p) => p.name.value.trim());
+      e.told = named.map((p) => p.told.value.trim());
       Object.assign(e, { got: g, total: tot, hit: core.missionHit(m, g, tot), done: true, title: m.title });
-      save(); missions();
+      editingMission = false; save(); missions();
     } },
       h('h3', {}, 'Check in'),
       people.length ? h('div', {}, h('p', { class: 'muted' }, 'Log them from memory. They go straight into your People Log for spaced review.'),
@@ -740,14 +773,18 @@
         items.map((x, i) => h('label', {}, (items.length > 1 ? (i + 1) + '. ' : '') + m.log.items[i], x))) : null,
       h('label', {}, m.score.label + (m.score.goal != null ? ' (goal: ' + goalText(m) + ')' : ''), pills || h('div', { class: 'row' }, gotIn, totalIn ? h('span', {}, ' out of ') : null, totalIn)),
       h('label', {}, 'Notes', notes), msg,
-      h('div', { class: 'row' }, h('button', { class: 'primary big' }, 'Complete mission'),
-        h('button', { type: 'button', onclick: () => {
+      h('div', { class: 'row' }, h('button', { class: 'primary big' }, e.done ? 'Save changes' : 'Complete mission'),
+        e.done ? h('button', { type: 'button', onclick: () => { editingMission = false; missions(); } }, 'Cancel') : h('button', { type: 'button', onclick: () => {
           e.skipped = e.skipped.concat(e.id);
           let next = core.pickMission(state.missions, content.MISSIONS, t, e.skipped);
           if (e.skipped.includes(next.id)) { e.skipped = [e.id]; next = core.pickMission(state.missions, content.MISSIONS, t, e.skipped); } // went through them all: start over
           state.missions[t] = Object.assign(core.blankEntry(next.id, next.title), { skipped: e.skipped });
           save(); missions();
-        } }, 'Swap mission'))));
+        } }, 'Swap mission')));
+    // Enter moves to the next field (like Memory Palace) instead of submitting a half-filled check-in.
+    const fields = [...form.querySelectorAll('input[type=text], input[type=number]')];
+    fields.forEach((el, i) => el.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); (fields[i + 1] || form.querySelector('button.primary')).focus(); } }));
+    nodes.push(form);
     return h('div', {}, nodes);
   }
 
@@ -757,24 +794,39 @@
     const lines = [];
     if (e.hit != null) lines.push(h('p', { class: e.hit ? 'ok' : 'muted' }, e.hit ? 'Goal reached (' + goalText(m) + ').' : 'Goal not reached this time (' + goalText(m) + '). Same mission, another day.'));
     if (e.predict != null && e.hit != null) lines.push(h('p', {}, 'You gave it ' + pct(e.predict) + (e.hit ? ' and made it.' : ' and missed.') + ' This counts toward your calibration in Stats.'));
-    if (v != null) lines.push(h('p', {}, pb == null ? 'First time: this sets your personal best.' : v > pb ? h('b', { class: 'ok' }, 'New personal best! (was ' + valueText(m, pb) + ')') : 'Personal best: ' + valueText(m, pb) + '.'));
-    if (e.tierBefore && tierNow > e.tierBefore) lines.push(h('p', { class: 'ok' }, h('b', {}, content.TRACKS[m.track] + ' tier ' + tierNow + ' unlocked.'), ' Harder missions in this track can now come up.'));
-    if (e.people.length) lines.push(h('p', {}, 'Added ' + e.people.join(', ') + ' to your People Log. First review: tomorrow.'));
-    if (e.items.some((x) => x.trim())) lines.push(h('p', { class: 'muted' }, 'In ' + (m.callbackDays || 3) + ' days you\'ll be asked to recall what you logged, without looking.'));
+    if (v != null) lines.push(h('p', {}, pb == null ? 'First time: this sets your personal best.' : v > pb ? h('b', { class: 'ok' }, 'New personal best! (was ' + valueText(m, pb) + ')')
+      : v === pb ? 'Tied your personal best (' + valueText(m, pb) + ').' : 'Personal best: ' + valueText(m, pb) + '.'));
+    if (!m.legacy) {
+      if (e.tierBefore && tierNow > e.tierBefore) lines.push(h('p', { class: 'ok' }, h('b', {}, content.TRACKS[m.track] + ' tier ' + tierNow + ' unlocked.'), ' Harder missions in this track can now come up.'));
+      else if (tierNow < 3) { const n = Math.min(2, doneAtTier(m.track, tierNow)); lines.push(h('div', { class: 'progress' }, h('span', { style: 'width:' + (n * 50) + '%' }), h('small', {}, n + ' of 2 toward ' + content.TRACKS[m.track] + ' tier ' + (tierNow + 1)))); }
+    }
+    const logged = e.items.filter((x) => x.trim());
+    if (e.people.length) lines.push(h('p', {}, 'In your People Log: ' + e.people.join(', ') + '. First review: tomorrow.'));
+    if (logged.length) lines.push(h('p', { class: 'muted' }, 'You logged: ' + logged.join(' · ') + '. In ' + (m.callbackDays || 3) + ' days you\'ll be asked to recall it without looking.'));
     return h('div', { class: 'result' },
       h('div', { class: 'score-big' + (e.hit ? ' celebrate' : '') }, e.got == null ? '✓' : m.score.outOf ? e.got + ' / ' + e.total : e.got + ' / ' + m.score.max),
-      h('p', { class: 'muted center' }, m.score.label), lines,
-      h('div', { class: 'row' }, h('a', { class: 'button', href: '#/' }, 'Home'),
-        h('button', { onclick: () => { e.done = false; save(); missions(); } }, 'Edit check-in')));
+      h('p', { class: 'muted center' }, m.score.label + (m.score.outOf && e.total ? ' · ' + pct(e.got / e.total) : '')), lines,
+      h('div', { class: 'row' }, h('a', { class: 'button primary', href: '#/', autofocus: true }, 'Done'),
+        h('button', { onclick: () => { editingMission = true; missions(); } }, 'Edit check-in')));
   }
+  const doneAtTier = (track, k) => Object.values(state.missions).filter((e) => e.done && content.MISSIONS.some((m) => m.id === e.id && m.track === track && m.tier === k)).length;
 
   // A few days later: recall what you logged, then compare.
   function callbackCard(day, count) {
-    const e = state.missions[day], m = missionOf(e), logged = e.items.map((x, i) => [m.log && m.log.items ? m.log.items[i] : '', x]).filter(([, x]) => x.trim());
-    const reveal = h('div', {}, h('button', { class: 'primary', onclick: () => reveal.replaceChildren(
+    const e = state.missions[day], m = missionOf(e), labels = m.log && m.log.items ? m.log.items : [];
+    const same = labels.length > 1 && labels.every((l) => l === labels[0]); // "Shoes, what they suggest…" ×5 reads better as Item 1–5
+    const logged = e.items.map((x, i) => [same ? 'Item ' + (i + 1) : labels[i] || '', x]).filter(([, x]) => x.trim());
+    const days = core.daysBetween(day, today());
+    const reveal = h('div', {}, h('button', { class: 'primary', autofocus: true, onclick: () => reveal.replaceChildren(
       h('ul', {}, logged.map(([label, x]) => h('li', {}, logged.length > 1 && label ? h('span', { class: 'muted' }, label + ': ') : null, x))),
       h('p', {}, 'How many did you remember?'),
-      h('div', { class: 'pills' }, Array.from({ length: logged.length + 1 }, (_, v) => h('button', { class: 'pill', onclick: () => { e.callback = { date: today(), got: v, of: logged.length }; save(); missions(); } }, v)))) }, 'Reveal what you logged'));
+      h('div', { class: 'pills' }, Array.from({ length: logged.length + 1 }, (_, v) => h('button', { class: 'pill', onclick: () => {
+        e.callback = { date: today(), got: v, of: logged.length }; save();
+        reveal.replaceChildren(h('p', { class: v === logged.length ? 'ok' : '' }, h('b', {}, v + ' of ' + logged.length + ' recalled after ' + days + ' days.'),
+          v === logged.length ? ' It stuck.' : ' Those are the ones to re-encode next time: name it, picture it, recall it once that evening.'),
+          h('button', { class: 'primary', autofocus: true, onclick: () => missions() }, 'Continue'));
+        reveal.querySelector('button').focus();
+      } }, v)))) }, 'Reveal what you logged'));
     return card(h('h2', {}, 'Callback' + (count > 1 ? ' (' + count + ' waiting)' : '')),
       h('p', {}, 'On ' + niceDate(day) + ' you did ', h('b', {}, m.title), '. Without looking: what did you log?'),
       h('ul', { class: 'muted' }, logged.map(([label]) => h('li', {}, label || 'item'))),
@@ -785,8 +837,7 @@
     return card(h('h2', {}, 'Tracks'), h('p', { class: 'muted' }, 'Finish two missions at a tier to unlock the next one in that track. One track comes up each day; swapping can pull from any.'),
       h('ul', { class: 'tracks' }, Object.entries(content.TRACKS).map(([id, name]) => {
         const tier = core.unlockedTier(state.missions, content.MISSIONS, id);
-        const doneAt = (k) => Object.values(state.missions).filter((e) => e.done && content.MISSIONS.some((m) => m.id === e.id && m.track === id && m.tier === k)).length;
-        return h('li', {}, h('b', {}, name), ' ', [1, 2, 3].map((k) => h('span', { class: 'tier' + (k <= tier ? ' open' : '') }, k <= tier ? 'Tier ' + k + ': ' + doneAt(k) + ' done' : 'Tier ' + k + ' 🔒')));
+        return h('li', {}, h('b', {}, name), ' ', [1, 2, 3].map((k) => h('span', { class: 'tier' + (k <= tier ? ' open' : '') }, k <= tier ? 'Tier ' + k + ': ' + doneAtTier(id, k) + ' done' : 'Tier ' + k + ' 🔒')));
       })));
   }
 
@@ -817,18 +868,19 @@
     // Alternate direction on odd boxes: name → what they told you. Remembering what people said matters as much as names.
     const reverse = p.detail && p.box % 2 === 1;
     const answer = reverse ? p.detail : p.name;
-    const reveal = h('div', {}, h('button', { class: 'primary', autofocus: true, onclick: () => reveal.replaceChildren(
-      h('p', { class: reverse ? 'answer' : 'word' }, answer), h('div', { class: 'row' }, h('button', { class: 'primary', onclick: () => grade(true) }, 'I remembered'), h('button', { onclick: () => grade(false) }, 'I didn\'t'))) }, reverse ? 'Show what they told you' : 'Show name'));
+    const reveal = h('div', {}, h('button', { class: 'primary', autofocus: true, onclick: () => { reveal.replaceChildren(
+      h('p', { class: reverse ? 'answer' : 'word' }, answer), h('div', { class: 'row' }, h('button', { class: 'primary', onclick: () => grade(true) }, 'I remembered'), h('button', { onclick: () => grade(false) }, 'I didn\'t')));
+      reveal.querySelector('button').focus(); } }, reverse ? 'Show what they told you' : 'Show name'));
     const clues = reverse
       ? h('ul', {}, h('li', {}, h('b', {}, p.name)), p.context ? h('li', {}, 'Met: ' + p.context) : null)
-      : h('ul', {}, p.context ? h('li', {}, 'Met: ' + p.context) : null, p.detail ? h('li', {}, 'Told you: ' + p.detail) : null, p.feature ? h('li', {}, 'Looks: ' + p.feature) : null, h('li', { class: 'muted' }, 'Added ' + p.met));
+      : h('ul', {}, p.context ? h('li', {}, 'Met: ' + p.context) : null, p.detail ? h('li', {}, 'Told you: ' + p.detail) : null, p.feature ? h('li', {}, 'Looks: ' + p.feature) : null, h('li', { class: 'muted' }, 'Added ' + niceDate(p.met)));
     render(card(h('div', { class: 'muted' }, (i + 1) + ' / ' + list.length), h('h3', {}, reverse ? 'What did they tell you?' : 'Who is this?'), clues,
       h('p', { class: 'muted' }, 'Say it out loud before revealing it.'), reveal));
   }
 
   // ---------- write your own cases ----------
   // Writing a case is practice too: you have to find the clue that separates the explanations. A friend can also write cases for you.
-  function caseEditor() {
+  function caseEditor(justSaved) {
     const f = (ph, rows) => (rows ? h('textarea', { rows, placeholder: ph }) : h('input', { type: 'text', autocomplete: 'off', placeholder: ph }));
     const fld = { text: f('What you see: concrete observations only (who, what, where, marks, objects, times)', 4), q: f('What is the most likely explanation?'),
       best: f('The best-supported answer'), w1: f('Another option'), w2: f('Another option'), w3: f('Another option'),
@@ -838,7 +890,7 @@
     fld.q.value = 'What is the most likely explanation?';
     const msg = h('p', { class: 'bad', 'aria-live': 'polite' });
     const mine = state.reason.custom;
-    render(card(h('h2', {}, 'Write a case'), h('p', { class: 'muted' }, 'Your cases join Read the Room once you\'ve worked through the built-in ones. Calibration ignores them, since you know the answers. Have a friend write some for you too.'),
+    render(card(h('h2', {}, 'Write a case'), justSaved === true ? h('p', { class: 'ok', role: 'status' }, 'Saved. You can see it in the list below.') : null, h('p', { class: 'muted' }, 'Your cases join Read the Room once you\'ve worked through the built-in ones. Calibration ignores them, since you know the answers. Have a friend write some for you too.'),
       h('form', { class: 'stack', onsubmit: (e) => {
         e.preventDefault();
         const v = (k) => fld[k].value.trim();
@@ -849,7 +901,7 @@
         if (hasNext && (!v('nq') || nopts.some((o) => !o) || new Set(nopts).size < 4)) { msg.textContent = 'For the follow-up, fill in the question and four different checks, or leave it all empty.'; return; }
         const c = { id: 'u' + Date.now(), d: 2, text: v('text'), q: v('q'), options: opts, explain: v('explain'), alt: v('alt') };
         if (hasNext) c.next = { q: v('nq'), options: nopts, explain: v('nexplain') };
-        state.reason.custom.push(c); state.reason.seen[c.id] = true; save(); caseEditor();
+        state.reason.custom.push(c); state.reason.seen[c.id] = true; save(); caseEditor(true);
       } },
         h('label', {}, 'Situation', fld.text), h('label', {}, 'Question', fld.q), h('label', {}, 'Best answer', fld.best),
         h('label', {}, 'Other answers (plausible, but less supported)', fld.w1, fld.w2, fld.w3), h('label', {}, 'Explanation', fld.explain), h('label', {}, 'Strongest alternative', fld.alt),
@@ -926,6 +978,7 @@
           const raw = JSON.parse(fr.result);
           if (!raw || raw.version !== 1) throw new Error('not a backup');
           const next = core.migrate(raw);
+          core.upgradeMissions(next.missions, content.MISSIONS, content.LEGACY_MISSION_TITLES);
           if (confirm('Replace your current progress with this backup?')) { state = next; save(); go('#/'); }
         } catch (e) { alert('That file isn\'t a valid Sharp backup.'); }
         file.value = '';
@@ -946,5 +999,19 @@
           h('button', { class: 'danger', onclick: () => { if (confirm('Erase ALL progress? Export a backup first if you might want it.')) { state = core.defaultState(); save(); go('#/'); } } }, 'Reset everything'))));
   }
 
+  if (unreadable) {
+    const bar = h('div', { class: 'card warn', role: 'alert' }, h('b', {}, 'Your saved progress couldn\'t be read, so nothing will be saved until you choose. '),
+      'A copy was kept. Download it, then reload (an update may still be loading) or start fresh.',
+      h('div', { class: 'row' },
+        h('button', { onclick: () => {
+          const a = h('a', { href: URL.createObjectURL(new Blob([unreadable], { type: 'application/json' })), download: 'sharp-unreadable-' + today() + '.json' });
+          document.body.append(a); a.click(); a.remove();
+        } }, 'Download the saved copy'),
+        h('button', { onclick: () => location.reload() }, 'Reload'),
+        h('button', { class: 'danger', onclick: () => { if (confirm('Start fresh? Your old data stays only in the file you downloaded.')) { unreadable = null; bar.remove(); save(); } } }, 'Start fresh')));
+    main.before(bar);
+  }
+  // Ask the browser not to clear this site's storage on its own (Safari can, after a week without visits).
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   route();
 })();

@@ -126,3 +126,10 @@ test('commute plan picks two different quick drills, neglected first', () => {
   assert.equal(core.planCommute(played, '2026-11-16')[0], 'numbers');
   for (const fam of core.FAMILIES) for (const d of fam) assert.ok(core.DRILLS.includes(d));
 });
+
+test('imported cases with a broken follow-up are dropped', () => {
+  const ok = { id: 'u1', text: 't', q: 'q', options: ['a', 'b', 'c', 'd'], explain: 'e' };
+  const s = core.migrate({ reason: { seen: {}, calib: [], custom: [ok, Object.assign({}, ok, { id: 'u2', next: { q: 'x' } }), Object.assign({}, ok, { id: 'u3', next: { q: 'x', options: ['1', '2', '3', '4'] } })] } });
+  assert.deepEqual(s.reason.custom.map((c) => c.id), ['u1', 'u3']);
+  assert.equal(core.calibrationTable([{ conf: 0.1, correct: false }, { conf: 0.6, correct: true }]).length, 5, 'low mission predictions get their own row');
+});

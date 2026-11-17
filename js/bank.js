@@ -205,7 +205,8 @@
     { id: 'atmpsi', q: 'What is standard atmospheric pressure at sea level?', answer: 14.696, unit: 'psi', source: '1 atm = 101.325 kPa = 14.696 psi (NIST)' },
     { id: 'gravity', q: 'What is standard gravitational acceleration (g)?', answer: 9.80665, unit: 'm/s²', source: 'Defined value (CGPM 1901, NIST)' },
     { id: 'lightspeed', q: 'What is the speed of light in a vacuum?', answer: 299792.458, unit: 'km/s', source: 'Exact by SI definition (NIST)' },
-    { id: 'avogadro', q: 'What is Avogadro\'s number (particles per mole)? You can type e-notation, like 6e23.', answer: 6.02214076e23, unit: 'per mol', source: 'Exact by the 2019 SI definition (NIST)' },
+    // (Avogadro's number was here; a phone's number keypad can't type 6e23, so it's replaced.)
+    { id: 'soundwater', q: 'What is the speed of sound in fresh water at 20 °C?', answer: 1481, unit: 'm/s', source: 'Standard reference value (about 1,481 m/s; e.g. Kinsler et al., Fundamentals of Acoustics)' },
     { id: 'kwh', q: 'How many megajoules are in one kilowatt-hour?', answer: 3.6, unit: 'MJ', source: '1 kWh = 1,000 W × 3,600 s = 3.6 MJ (exact)' },
     { id: 'quarter', q: 'What is the mass of a U.S. quarter (current clad version)?', answer: 5.67, unit: 'g', source: 'U.S. Mint coin specifications: 5.670 g' },
     { id: 'vexfield', q: 'What is the nominal side length of a standard VEX V5 Robotics Competition field (it is square)?', answer: 12, unit: 'ft', source: 'RECF / VEX game manuals: 12 ft × 12 ft field' },

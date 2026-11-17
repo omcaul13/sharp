@@ -200,7 +200,8 @@
   }
   const isCalib = (r) => r && typeof r.conf === 'number' && typeof r.correct === 'boolean';
   const strs = (a, n) => Array.isArray(a) && a.length === n && a.every((x) => typeof x === 'string' && x.trim());
-  const isCase = (c) => c && typeof c.id === 'string' && typeof c.text === 'string' && typeof c.q === 'string' && strs(c.options, 4) && typeof c.explain === 'string';
+  const isCase = (c) => c && typeof c.id === 'string' && typeof c.text === 'string' && typeof c.q === 'string' && strs(c.options, 4) && typeof c.explain === 'string'
+    && (c.next == null || (typeof c.next.q === 'string' && strs(c.next.options, 4)));
   function migrate(raw) {
     const s = defaultState();
     if (!raw || typeof raw !== 'object') return s;
@@ -225,6 +226,7 @@
       s.missions[d] = Object.assign(blankEntry(m.id, ''), m, {
         title: String(m.title || ''), notes: String(m.notes || ''), predict: typeof m.predict === 'number' ? m.predict : null,
         items: Array.isArray(m.items) ? m.items.map(String) : [], people: Array.isArray(m.people) ? m.people.map(String) : [],
+        told: Array.isArray(m.told) ? m.told.map(String) : [],
         skipped: Array.isArray(m.skipped) ? m.skipped.filter((x) => typeof x === 'string') : [] });
     }
     return s;

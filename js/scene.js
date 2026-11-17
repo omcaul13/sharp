@@ -101,7 +101,7 @@
     },
     itemColor(s, rng) {
       const it = rng.pick(s.table);
-      return { q: 'What color was the ' + it.type + '?', answer: it.color, options: mc(rng, it.color, ITEM_COLORS[it.type].length >= 4 ? ITEM_COLORS[it.type] : Object.keys(COLORS)) };
+      return { q: it.type === 'plant' ? 'What color was the plant\'s pot?' : 'What color was the ' + it.type + '?', answer: it.color, options: mc(rng, it.color, ITEM_COLORS[it.type].length >= 4 ? ITEM_COLORS[it.type] : Object.keys(COLORS)) };
     },
     itemPresent(s, rng) {
       const present = s.table.map((t) => t.type);
@@ -248,7 +248,7 @@
       { label: s.people.length + (s.people.length === 1 ? ' person' : ' people'), keys: ['person', 'people', 'man', 'woman', 'guy', 'someone'] },
     ].filter(Boolean);
     s.people.forEach((f, i) => inv.push({ label: 'Person ' + (i + 1) + ': ' + faces.describe(f).replace('Person with ', ''), keys: [f.shirt + ' shirt'].concat(f.hat !== 'none' ? [f.hat] : [], f.glasses !== 'none' ? ['glasses'] : [], f.facial === 'beard' ? ['beard'] : []) }));
-    s.table.forEach((t) => inv.push({ label: t.color + ' ' + t.type + ' on the table', keys: [t.type] }));
+    s.table.forEach((t) => inv.push({ label: (t.type === 'plant' ? 'plant in a ' + t.color + ' pot' : t.color + ' ' + t.type) + ' on the table', keys: [t.type] })); // the color is the pot's
     if (s.odd !== 'nothing') inv.push({ label: 'Unusual: ' + ODDS[s.odd], keys: [s.odd] });
     return inv;
   }

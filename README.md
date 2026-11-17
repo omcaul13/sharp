@@ -9,6 +9,8 @@ A daily ~15-minute trainer for observation, memory for people and details, and h
 
 Progress is saved in that browser only (localStorage), so your phone and your computer each keep their own. To move progress between them, use **Settings → Export backup** on one and **Import backup** on the other. Export now and then anyway.
 
+On iPhone, use it from the Home Screen icon rather than a Safari tab: Safari can clear a website's saved data after about a week without a visit, and the Home Screen app keeps its own data, separate from Safari.
+
 ## What's in it
 
 - **11 drills**, each with levels 1–20 that adapt to keep you near 75–85% accuracy: Glance, Spot the Change, Room Recall (rooms come back days later, changed), Faces & Names (spaced reviews; people sometimes come back with a new look), Memory Palace (with delayed recall of your last list), Read the Room (40 deduction cases plus your own), Conversation Recall (spoken self-introductions), Witness, Describe It, Numbers (major system) and Estimation (90% ranges).
