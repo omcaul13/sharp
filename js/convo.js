@@ -27,7 +27,7 @@
   const YEARS = ['first-year', 'sophomore', 'junior', 'senior', 'grad student'];
   // Human relatives are gender-neutral because faces.FIRST carries no gender. First three are human.
   const REL = ['cousin', 'younger sibling', 'older sibling', 'dog', 'cat', 'rabbit'];
-  const AGE = { cousin: [6, 20], 'younger sibling': [8, 10], 'older sibling': [20, 10] }; // [min, span]
+  const AGE = { cousin: [6, 20], 'younger sibling': [8, 10], 'older sibling': [22, 8] }; // [min, span]
   const FILLER = ["Sorry if I'm rambling, I always talk too much when I meet new people.",
     "It's been a really long week, so I'm running mostly on coffee right now.",
     "I'm still learning everyone's names, so bear with me if I forget yours.",
@@ -65,7 +65,7 @@
     hometown(r) {
       const v = r.pick(CITIES);
       return { main: v, pool: CITIES, easy: [['Where did they grow up?', v, CITIES]],
-        s: r.pick([`I grew up in ${v}, and I still go back every summer.`, `I'm originally from ${v}, which most people have never visited.`]) };
+        s: r.pick([`I grew up in ${v}, and I still go back every summer.`, `I'm originally from ${v}, which people always ask me about.`]) };
     },
     major(r) {
       const v = r.pick(MAJORS), yr = r.pick(YEARS);
@@ -74,11 +74,11 @@
     },
     family(r, name) {
       const rel = r.pick(REL), human = REL.indexOf(rel) < 3;
-      const who = human ? name() : r.pick(PETS), age = human ? AGE[rel][0] + r.int(AGE[rel][1]) : 1 + r.int(13);
+      const who = human ? name() : r.pick(PETS), age = human ? AGE[rel][0] + r.int(AGE[rel][1]) : 1 + r.int(10);
       return { main: who, pool: human ? FIRST : PETS, easy: [['Which family member or pet did they mention?', rel, REL]],
         hard: [[`What is the name of their ${rel}?`, who, human ? FIRST : PETS], [`How old is their ${rel}?`, String(age), nums(age)]],
         s: r.pick([`Back home there's my ${rel} ${who}, who is ${age} and basically runs the house.`,
-          `My ${rel} ${who} just turned ${age}, and honestly I miss home a little.`]) };
+          `My ${rel} ${who} just turned ${age}, and honestly I miss home a little.`].slice(rel === 'cousin' ? 1 : 0)) }; // cousins don't live at home
     },
     hobby(r) {
       const v = r.pick(HOBBIES);
@@ -96,7 +96,8 @@
         s: r.pick([`If you need food recs, I'm obsessed with ${v}.`, `My comfort food is ${v}, no contest.`]) };
     },
     plan(r) {
-      const v = r.pick(EVENTS), day = r.pick(DAYS);
+      const v = r.pick(EVENTS), weekdayOnly = ['job interview', 'career fair', 'dentist appointment', 'design review'].includes(v);
+      const day = r.pick(weekdayOnly ? DAYS.slice(0, 5) : DAYS);
       return { main: v, pool: EVENTS, easy: [['What do they have coming up?', v, EVENTS]],
         hard: [[`What day is the ${v}?`, day, DAYS]],
         s: r.pick([`On ${day} I have a ${v}, so wish me luck.`, `This ${day} I've got a ${v} that I'm a little nervous about.`]) };
@@ -107,7 +108,7 @@
         s: r.pick([`Last summer I worked at ${v}, which was more fun than it sounds.`, `Before this, I had a job at ${v} for a while.`]) };
     },
     years(r) {
-      const v = r.pick(ACTS), n = 2 + r.int(11);
+      const v = r.pick(ACTS), n = 2 + r.int(7);
       return { main: v, pool: ACTS, easy: [[`What have they been doing for ${n} years?`, v, ACTS]],
         hard: [[`How many years have they been ${v}?`, String(n), nums(n)]],
         s: r.pick([`I've been ${v} for ${n} years now.`, `Fun fact: I've been ${v} for ${n} years.`]) };

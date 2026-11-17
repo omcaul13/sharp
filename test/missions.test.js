@@ -90,7 +90,7 @@ test('old mission logs are upgraded by title and bad entries dropped', () => {
   assert.equal(s.missions['2026-11-15'].id, 'shoe-day');
   assert.equal(s.missions['2026-11-15'].notes, 'blue vans');
   assert.equal(s.missions['2026-11-15'].done, true);
-  for (const t of content.LEGACY_MISSION_TITLES) assert.ok(MISSIONS.some((m) => m.title === t), 'legacy title kept: ' + t);
+  for (const t of content.LEGACY_MISSION_TITLES) assert.ok(MISSIONS.some((m) => m.title === t || (m.aliases || []).includes(t)), 'legacy title kept: ' + t);
 });
 
 test('migrate validates the new fields', () => {

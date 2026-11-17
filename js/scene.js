@@ -242,8 +242,9 @@
       { label: 'Framed picture: ' + s.frame.color + ' ' + s.frame.shape, keys: ['frame', 'picture', 'painting', s.frame.shape] },
       s.note && { label: 'Sticky note: ' + s.note, keys: ['note', 'sticky', 'post-it', s.note] },
       s.calendar && { label: 'Calendar: ' + MONTHS[s.calendar.month] + ' ' + s.calendar.day, keys: ['calendar', MONTHS[s.calendar.month].toLowerCase().slice(0, 3)] },
-      { label: 'Door ' + s.door, keys: ['door'] },
-      { label: 'Floor lamp ' + s.lamp, keys: ['lamp', 'light'] },
+      // door and lamp need their state too, so "door open" doesn't earn "Door closed"
+      { label: 'Door ' + s.door, keys: [s.door + ' door', 'door ' + s.door, 'door is ' + s.door, 'door was ' + s.door] },
+      { label: 'Floor lamp ' + s.lamp, keys: ['lamp ' + s.lamp, 'lamp is ' + s.lamp, 'lamp was ' + s.lamp, 'light ' + s.lamp, 'light is ' + s.lamp, 'light was ' + s.lamp] },
       { label: s.people.length + (s.people.length === 1 ? ' person' : ' people'), keys: ['person', 'people', 'man', 'woman', 'guy', 'someone'] },
     ].filter(Boolean);
     s.people.forEach((f, i) => inv.push({ label: 'Person ' + (i + 1) + ': ' + faces.describe(f).replace('Person with ', ''), keys: [f.shirt + ' shirt'].concat(f.hat !== 'none' ? [f.hat] : [], f.glasses !== 'none' ? ['glasses'] : [], f.facial === 'beard' ? ['beard'] : []) }));

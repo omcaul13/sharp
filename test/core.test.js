@@ -132,7 +132,9 @@ test('inventory keyword matching', () => {
   const s = scene.makeScene(core.makeRng(3), 10);
   const inv = scene.inventory(s);
   const door = inv.find((x) => x.label.startsWith('Door'));
-  assert.ok(scene.mentioned(door, 'The DOOR was open'));
+  const other = s.door === 'open' ? 'closed' : 'open';
+  assert.ok(scene.mentioned(door, 'The DOOR was ' + s.door));
+  assert.ok(!scene.mentioned(door, 'the door was ' + other), 'the wrong door state earns no credit');
   assert.ok(!scene.mentioned(door, 'a window and a clock'));
 });
 

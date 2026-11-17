@@ -184,7 +184,7 @@
     for (const [d, e] of Object.entries(log)) {
       if (typeof e.id === 'string') continue;
       const title = legacyTitles[e.idx % legacyTitles.length];
-      const m = missions.find((x) => x.title === title);
+      const m = missions.find((x) => x.title === title || (x.aliases || []).includes(title));
       log[d] = Object.assign(blankEntry(m ? m.id : 'legacy', title), { done: !!e.done, notes: typeof e.notes === 'string' ? e.notes : '' });
     }
     return log;
