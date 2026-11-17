@@ -76,6 +76,7 @@
   // Cases have 4 options, so honest confidence ranges from 25% (pure guess) to 100%.
   function calibrationTable(records) {
     const bins = [[0.25, 0.5], [0.5, 0.7], [0.7, 0.9], [0.9, 1.01]];
+    if (records.some((r) => r.conf < 0.25)) bins.unshift([0, 0.25]); // mission predictions can go below a 4-option guess
     return bins.map(([lo, hi]) => {
       const rs = records.filter((r) => r.conf >= lo && r.conf < hi);
       return { label: Math.round(lo * 100) + '–' + Math.min(100, Math.round(hi * 100) - 1) + '%', n: rs.length,
@@ -133,6 +134,7 @@
 
   // ---------- missions ----------
   // Entry per day: { id, title, done, notes, predict, items, people, got, total, hit, callback, skipped }.
+  // predict (0-1) + hit give mission calibration records, derived on demand so editing a check-in can't double-count.
   const blankEntry = (id, title) => ({ id, title, done: false, notes: '', predict: null, items: [], people: [], got: null, total: null, hit: null, callback: null, skipped: [] });
   const missionValue = (m, e) => (e.got == null ? null : m.score.outOf ? (e.total ? e.got / e.total : null) : e.got);
   function missionHit(m, got, total) {
@@ -194,7 +196,7 @@
     const levels = {};
     DRILLS.forEach((d) => { levels[d] = 1; });
     return { version: 1, levels, history: [], people: [], palace: { loci: [], last: null }, reason: { seen: {}, calib: [], custom: [] },
-      missions: {}, missionCalib: [], rooms: [], estimate: { asked: 0, contained: 0 }, seenIntro: {}, intention: '' };
+      missions: {}, rooms: [], estimate: { asked: 0, contained: 0 }, seenIntro: {}, intention: '' };
   }
   const isCalib = (r) => r && typeof r.conf === 'number' && typeof r.correct === 'boolean';
   const strs = (a, n) => Array.isArray(a) && a.length === n && a.every((x) => typeof x === 'string' && x.trim());
@@ -208,11 +210,11 @@
     for (const d of DRILLS) if (typeof s.levels[d] !== 'number' || !(s.levels[d] >= LEVEL_MIN && s.levels[d] <= LEVEL_MAX)) s.levels[d] = 1;
     if (!Array.isArray(s.palace.loci)) s.palace = { loci: [], last: null };
     const last = s.palace.last;
-    s.palace.last = last && Array.isArray(last.words) && last.words.every((w) => typeof w === 'string') && typeof last.date === 'string' ? last : null;
+    s.palace.last = last && Array.isArray(last.words) && last.words.every((w) => typeof w === 'string') && typeof last.date === 'string'
+      && (last.loci == null || (Array.isArray(last.loci) && last.loci.length >= last.words.length)) ? last : null;
     if (!s.reason.seen || typeof s.reason.seen !== 'object' || !Array.isArray(s.reason.calib)) s.reason = { seen: {}, calib: [], custom: [] };
     s.reason.calib = s.reason.calib.filter(isCalib);
     s.reason.custom = Array.isArray(s.reason.custom) ? s.reason.custom.filter(isCase) : [];
-    s.missionCalib = s.missionCalib.filter(isCalib);
     s.rooms = s.rooms.filter((r) => r && typeof r.seed === 'number' && typeof r.level === 'number' && typeof r.date === 'string');
     if (!(s.estimate.asked >= 0 && s.estimate.contained >= 0)) s.estimate = { asked: 0, contained: 0 };
     s.history = s.history.filter((h) => h && typeof h.drill === 'string' && typeof h.date === 'string');
@@ -221,7 +223,7 @@
       if (!m || (typeof m.id !== 'string' && typeof m.idx !== 'number')) { delete s.missions[d]; continue; }
       if (typeof m.id !== 'string') continue; // legacy entry: the app upgrades it with upgradeMissions
       s.missions[d] = Object.assign(blankEntry(m.id, ''), m, {
-        title: String(m.title || ''), notes: String(m.notes || ''),
+        title: String(m.title || ''), notes: String(m.notes || ''), predict: typeof m.predict === 'number' ? m.predict : null,
         items: Array.isArray(m.items) ? m.items.map(String) : [], people: Array.isArray(m.people) ? m.people.map(String) : [],
         skipped: Array.isArray(m.skipped) ? m.skipped.filter((x) => typeof x === 'string') : [] });
     }

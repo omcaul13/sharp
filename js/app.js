@@ -1,15 +1,22 @@
 // UI: routing, the six drills, missions, People Log, stats, settings. Plain DOM, no framework.
 (function () {
   'use strict';
-  const { core, faces, scene: sceneLib, content } = window.Sharp;
+  const { core, faces, scene: sceneLib, content, convo, witness, bank } = window.Sharp;
   const STORE_KEY = 'sharp.v1';
-  const TITLES = { glance: 'Glance', change: 'Spot the Change', scene: 'Room Recall', faces: 'Faces & Names', palace: 'Memory Palace', reason: 'Read the Room' };
-  const BLURBS = { glance: 'Flash memory of objects', change: 'Catch what changed', scene: 'Observe a whole room', faces: 'Remember people', palace: 'Store ordered lists', reason: 'Observation vs. inference' };
+  const TITLES = { glance: 'Glance', change: 'Spot the Change', scene: 'Room Recall', faces: 'Faces & Names', palace: 'Memory Palace', reason: 'Read the Room',
+    convo: 'Conversation Recall', witness: 'Witness', describe: 'Describe It', numbers: 'Numbers', estimate: 'Estimation' };
+  const BLURBS = { glance: 'Flash memory of objects', change: 'Catch what changed', scene: 'Observe a whole room', faces: 'Remember people', palace: 'Store ordered lists', reason: 'Observation vs. inference',
+    convo: 'Remember what people tell you', witness: 'Who did what, in what order', describe: 'Put what you see into words', numbers: 'Phone numbers, codes, dates', estimate: 'Honest 90% ranges' };
+  const ALL_CASES = content.CASES.concat(bank ? bank.CASES : []);
 
   // ---------- state ----------
   let state = load();
   function load() {
-    try { return core.migrate(JSON.parse(localStorage.getItem(STORE_KEY))); } catch (e) { return core.defaultState(); }
+    try {
+      const s = core.migrate(JSON.parse(localStorage.getItem(STORE_KEY)));
+      core.upgradeMissions(s.missions, content.MISSIONS, content.LEGACY_MISSION_TITLES);
+      return s;
+    } catch (e) { return core.defaultState(); }
   }
   function save() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) { alert('Could not save progress. Export your data from Settings to keep a copy.'); }
@@ -45,7 +52,7 @@
   const card = (...kids) => h('section', { class: 'card' }, ...kids);
   const norm = (s) => String(s).toLowerCase().trim().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ');
   const normWord = (s) => norm(s).replace(/s$/, ''); // palace recall forgives a plural; names must be exact
-  const missionAt = (m) => content.MISSIONS[m.idx % content.MISSIONS.length];
+  const missionOf = (e) => content.MISSIONS.find((m) => m.id === e.id) || { id: e.id, title: e.title || 'Mission', text: '', track: '', tier: 1, log: null, score: { label: '', max: 1, goal: null }, legacy: true };
   const pct = (x) => Math.round(x * 100) + '%';
 
   let timers = [];
@@ -74,20 +81,21 @@
   function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
   function route() {
     clearTimers();
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
     const [, page = '', arg, flag] = location.hash.split('/');
     document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#/' + page));
-    if (page === 'drill' && TITLES[arg]) return drillIntro(arg, flag === 'w');
-    ({ learn, stats, missions, people: peopleLog, settings }[page] || home)();
+    if (page === 'drill' && TITLES[arg]) return drillIntro(arg, flag === 'w' || flag === 'c' ? flag : null);
+    ({ learn, stats, missions, people: peopleLog, settings, cases: caseEditor }[page] || home)();
   }
   window.addEventListener('hashchange', route);
 
   // ---------- home ----------
   function home() {
     const t = today();
-    const plan = core.planWorkout(state.history, t);
-    const nextUp = plan.find((d) => !doneToday(d));
+    const plan = core.planWorkout(state.history, t), commute = core.planCommute(state.history, t);
+    const nextUp = plan.find((d) => !doneToday(d)), commuteNext = commute.find((d) => !doneToday(d));
     const realDue = state.people.filter((p) => p.source === 'real' && core.isDue(p, t)).length;
-    const m = todaysMission();
+    const e = todaysMission(), m = missionOf(e), callbacks = core.dueCallbacks(state.missions, content.MISSIONS, t).length;
     const intention = state.intention
       ? h('p', { class: 'intention' }, '“' + state.intention + '” ', h('a', { href: '#/settings' }, 'edit'))
       : intentionForm();
@@ -101,9 +109,13 @@
         nextUp
           ? h('button', { class: 'primary big', autofocus: true, onclick: () => go('#/drill/' + nextUp + '/w') }, plan.some(doneToday) ? 'Continue workout' : 'Start today\'s workout (~15 min)')
           : h('p', { class: 'ok' }, 'Workout done for today. Now go do the mission.'),
-        h('p', { class: 'muted' }, 'Practiced ' + core.daysPracticed(state.history, t, 7) + ' of the last 7 days.')),
-      card(h('h2', {}, 'Mission of the day'), h('h3', {}, missionAt(m)[0] + (m.done ? ' ✓' : '')),
-        h('p', {}, missionAt(m)[1]), h('a', { href: '#/missions' }, m.done ? 'View notes' : 'Log it when done →')),
+        nextUp && commuteNext ? h('button', { onclick: () => go('#/drill/' + commuteNext + '/c') }, 'Short on time? 5-minute version: ' + commute.map((d) => TITLES[d]).join(' + ')) : null,
+        h('p', { class: 'muted' }, 'Practiced ' + core.daysPracticed(state.history, t, 7) + ' of the last 7 days. ', h('a', { href: '#/stats' }, 'Your week →'))),
+      card(h('h2', {}, 'Mission of the day'), missionBadge(m), h('h3', {}, m.title + (e.done ? ' ✓' : '')),
+        h('p', {}, m.text),
+        e.done ? h('p', { class: e.hit ? 'ok' : 'muted' }, scoreLine(m, e)) : null,
+        callbacks ? h('p', { class: 'due-first' }, h('b', {}, 'Callback: '), callbacks + ' past mission' + (callbacks === 1 ? '' : 's') + ' to recall from memory.') : null,
+        h('a', { class: 'button', href: '#/missions' }, e.done ? 'View result' : e.predict == null && m.score.goal != null ? 'Predict, then go →' : 'Check in when done →')),
       card(h('h2', {}, 'All drills'), h('div', { class: 'drills' }, core.DRILLS.map((d) => h('a', { class: 'drill', href: '#/drill/' + d },
         h('strong', {}, TITLES[d]), h('span', {}, BLURBS[d]), h('span', { class: 'muted' }, 'Level ' + state.levels[d])))))
     );
@@ -115,31 +127,34 @@
   }
 
   // ---------- drill intro + finish ----------
-  function drillIntro(name, inWorkout) {
-    if (state.seenIntro[name]) return startDrill(name, inWorkout);
-    render(techniqueCard(name, h('button', { class: 'primary big', autofocus: true, onclick: () => { state.seenIntro[name] = true; save(); startDrill(name, inWorkout); } }, 'Start')));
+  // mode: 'w' = daily workout, 'c' = commute mode, null = a single drill
+  function drillIntro(name, mode) {
+    if (state.seenIntro[name]) return startDrill(name, mode);
+    render(techniqueCard(name, h('button', { class: 'primary big', autofocus: true, onclick: () => { state.seenIntro[name] = true; save(); startDrill(name, mode); } }, 'Start')));
   }
+  const planFor = (mode) => (mode === 'c' ? core.planCommute : core.planWorkout)(state.history, today());
   function techniqueCard(name, action) {
     const t = content.TECHNIQUES[name];
     return card(h('h2', {}, t.title), h('p', {}, t.what), h('h3', {}, 'How to do it well'), h('ul', {}, t.how.map((x) => h('li', {}, x))),
       h('p', { class: 'muted why' }, t.why), action);
   }
-  function startDrill(name, inWorkout) {
-    const runners = { glance: runGlance, change: runChange, scene: runScene, faces: runFaces, palace: runPalace, reason: runReason };
-    runners[name]((acc, details) => finish(name, acc, details, inWorkout));
+  function startDrill(name, mode) {
+    const runners = { glance: runGlance, change: runChange, scene: runScene, faces: runFaces, palace: runPalace, reason: runReason,
+      convo: runConvo, witness: runWitness, describe: runDescribe, numbers: runNumbers, estimate: runEstimate };
+    runners[name]((acc, details) => finish(name, acc, details, mode));
   }
-  function finish(name, acc, details, inWorkout) {
+  function finish(name, acc, details, mode) {
     const { before, after } = core.recordRound(state, name, acc);
     save();
-    const next = inWorkout ? core.planWorkout(state.history, today()).find((d) => !doneToday(d)) : null;
+    const next = mode ? planFor(mode).find((d) => !doneToday(d)) : null;
     const lvl = after > before ? 'Level up → ' + after : after < before ? 'Level eased to ' + after + ' (that\'s the system keeping you in the learning zone)' : 'Level stays at ' + after;
     render(card(h('h2', {}, TITLES[name] + ': ' + pct(acc)), h('p', { class: after > before ? 'ok' : 'muted' }, lvl),
       details || null,
       h('div', { class: 'row' },
-        next ? h('button', { class: 'primary', autofocus: true, onclick: () => go('#/drill/' + next + '/w') }, 'Next: ' + TITLES[next] + ' →') : null,
-        inWorkout && !next ? h('button', { class: 'primary', autofocus: true, onclick: () => go('#/missions') }, 'Workout done → mission') : null,
-        h('button', { onclick: () => startDrill(name, inWorkout) }, 'Again'),
-        h('button', { onclick: () => render(techniqueCard(name, h('button', { class: 'primary', onclick: () => startDrill(name, inWorkout) }, 'Start'))) }, 'Technique'),
+        next ? h('button', { class: 'primary', autofocus: true, onclick: () => go('#/drill/' + next + '/' + mode) }, 'Next: ' + TITLES[next] + ' →') : null,
+        mode && !next ? h('button', { class: 'primary', autofocus: true, onclick: () => go('#/missions') }, (mode === 'c' ? 'Commute set done' : 'Workout done') + ' → mission') : null,
+        h('button', { onclick: () => startDrill(name, mode) }, 'Again'),
+        h('button', { onclick: () => render(techniqueCard(name, h('button', { class: 'primary', onclick: () => startDrill(name, mode) }, 'Start'))) }, 'Technique'),
         h('a', { class: 'button', href: '#/' }, 'Home'))));
   }
 
@@ -252,8 +267,36 @@
 
   // ---------- Room Recall ----------
   function runScene(end) {
-    const rng = core.makeRng(core.freshSeed());
-    const s = sceneLib.makeScene(rng, state.levels.scene), qs = sceneLib.makeQuestions(s, rng), svg = sceneLib.sceneSvg(s);
+    const t = today(), L = state.levels.scene, seed = core.freshSeed(), rng = core.makeRng(core.freshSeed());
+    const s = sceneLib.makeScene(core.makeRng(seed), L), qs = sceneLib.makeQuestions(s, rng), svg = sceneLib.sceneSvg(s);
+    // A room from 2+ days ago comes back with a few changes first. It's a bonus: it doesn't move your level.
+    const old = state.rooms.find((r) => !r.revisited && core.daysBetween(r.date, t) >= 2);
+    let revisitNote = null;
+    if (old) revisit(old, () => study()); else study();
+    function revisit(r, then) {
+      const k = 1 + (r.level >= 8) + (r.level >= 15);
+      const before = sceneLib.makeScene(core.makeRng(r.seed), r.level), mut = sceneLib.mutate(before, rng, k);
+      const statements = rng.shuffle(mut.changes.concat(mut.decoys.slice(0, 6 - k))), truth = new Set(mut.changes);
+      const look = countdown(before.seconds, ask);
+      render(card(h('h2', {}, 'You\'ve been here before'), h('p', {}, 'You studied this room on ' + niceDate(r.date) + '. Since then, ' + (k === 1 ? 'one thing has' : k + ' things have') + ' changed.'),
+        look, h('div', { class: 'visual', html: sceneLib.sceneSvg(mut.scene) }), h('button', { onclick: () => look.finish() }, 'Ready')));
+      function ask() {
+        const boxes = statements.map(() => h('input', { type: 'checkbox' }));
+        render(card(h('h3', {}, 'What changed since ' + niceDate(r.date) + '? Tick ' + k + '.'),
+          h('div', { class: 'checklist' }, statements.map((x, i) => h('label', { class: 'radio' }, boxes[i], ' ' + x))),
+          h('button', { class: 'primary', onclick: () => {
+            const chosen = statements.filter((_, i) => boxes[i].checked), sc = core.recognitionScore(mut.changes, chosen);
+            r.revisited = true; save();
+            revisitNote = h('p', { class: 'muted' }, 'Revisited room from ' + niceDate(r.date) + ': ' + pct(sc) + ' (not counted toward your level).');
+            render(card(h('h3', {}, 'Changes: ' + pct(sc)), h('ul', {}, statements.map((x, i) => h('li', { class: truth.has(x) ? 'ok' : boxes[i].checked ? 'bad' : 'muted' },
+              (truth.has(x) ? '✓ changed: ' : boxes[i].checked ? '✗ didn\'t change: ' : 'didn\'t change: ') + x))),
+              h('div', { class: 'pair' }, h('div', {}, h('div', { class: 'muted' }, 'Then'), h('div', { class: 'visual', html: sceneLib.sceneSvg(before) })),
+                h('div', {}, h('div', { class: 'muted' }, 'Now'), h('div', { class: 'visual', html: sceneLib.sceneSvg(mut.scene) }))),
+              h('button', { class: 'primary', autofocus: true, onclick: then }, 'On to today\'s room')));
+          } }, 'Check')));
+      }
+    }
+    function study() {
     const timer = countdown(s.seconds, freeRecall);
     render(card(h('h3', {}, 'Study the room'), timer, h('div', { class: 'visual', html: svg }), h('p', { class: 'muted' }, 'Narrate under your breath as you scan: "rain outside, clock 3:25, blue triangle, door open…". Describing is the core skill.'), h('button', { onclick: () => timer.finish() }, 'I\'m ready')));
     // Free recall first: producing details from memory is stronger practice than recognizing them in a list.
@@ -261,6 +304,7 @@
       const box = h('textarea', { rows: 5, autofocus: true, placeholder: 'clock 3:25, rainy window, blue triangle, door open, 2 people (one in a cap)…' });
       render(card(h('h3', {}, 'Before the questions: list everything you remember'), h('p', { class: 'muted' }, 'Quick fragments are fine. This part isn\'t scored, but the debrief shows what you got.'),
         box, h('button', { class: 'primary', onclick: () => quiz(box.value) }, 'On to the questions')));
+    }
     }
     function quiz(recalled) {
       const said = recalled;
@@ -271,7 +315,8 @@
         const answers = qs.map((q, i) => { const c = main.querySelector('input[name="q' + i + '"]:checked'); return c ? c.value : '—'; });
         const right = answers.filter((a, i) => a === qs[i].answer).length;
         const inv = sceneLib.inventory(s);
-        end(right / qs.length, h('div', {},
+        state.rooms = state.rooms.concat({ seed, level: L, date: t }).slice(-20);
+        end(right / qs.length, h('div', {}, revisitNote,
           h('div', { class: 'visual', html: svg }),
           h('ul', { class: 'answers' }, qs.map((q, i) => h('li', { class: answers[i] === q.answer ? 'ok' : 'bad' }, q.q + ' ', h('b', {}, q.answer), answers[i] === q.answer ? '' : ' (you said ' + answers[i] + ')'))),
           h('h3', {}, 'Full inventory'),
@@ -297,9 +342,14 @@
     const nameQ = (p, prompt, group, after) => typed
       ? typedStep({ prompt, visual: faces.faceSvg(p.face, 150), answer: p.first, explain: p.first + ' ' + p.last + '.', after })
       : mcStep({ prompt, visual: faces.faceSvg(p.face, 150), answer: p.first, options: nameOptions(p, group), explain: p.first + ' ' + p.last + '.', after });
-    const reviewSteps = due.map((p) => nameQ(p, 'You met this person on ' + niceDate(p.met) + '. Who is it?', due, (ok) => {
-      Object.assign(p, core.reviewCard(p, ok, t)); save();
-    }));
+    // Real people change how they look, so after the first review a returning face sometimes has new glasses, hair or beard.
+    const reviewSteps = due.map((p) => {
+      const re = (p.box || 0) >= 1 && rng.next() < 0.5 ? faces.restyle(p.face, rng) : null;
+      const shown = re ? Object.assign({}, p, { face: re.face, last: p.last + ' (new look: ' + re.change + ')' }) : p;
+      return nameQ(shown, 'You met this person on ' + niceDate(p.met) + '. Who is it?', due, (ok) => {
+        Object.assign(p, core.reviewCard(p, ok, t)); save();
+      });
+    });
     let right = 0, total = 0;
     if (reviewSteps.length) {
       render(card(h('h2', {}, 'First: people you met before'), h('p', {}, due.length + ' ' + (due.length === 1 ? 'person is' : 'people are') + ' due for review. Recall is what makes names stick.'),
@@ -355,8 +405,18 @@
     const L = state.levels.palace, loci = state.palace.loci;
     const n = Math.min(loci.length, core.byLevel(L, 5, 20)), secs = core.byLevel(L, 8, 3);
     const rng = core.makeRng(core.freshSeed());
-    const words = rng.sample(content.PALACE_WORDS, n);
-    show(0);
+    const t = today(), last = state.palace.last;
+    const words = rng.sample(content.PALACE_WORDS.filter((w) => !(last && last.words.includes(w))), n);
+    let retestNote = null;
+    // First, the list from your last round: delayed recall is the real test of a memory palace. Shown once, not counted toward the level.
+    if (last && last.date < t) {
+      render(card(h('h2', {}, 'Before today\'s list'), h('p', {}, 'On ' + niceDate(last.date) + ' you stored ' + last.words.length + ' items on your route. Walk it again: what was at each stop?'),
+        h('div', { class: 'row' }, h('button', { class: 'primary', autofocus: true, onclick: () => recallForm(last.loci || loci, last.words, 'From ' + niceDate(last.date) + ': what was at each stop?', (right, table) => {
+          retestNote = h('div', {}, h('p', { class: 'muted' }, 'Delayed recall of the ' + niceDate(last.date) + ' list: ' + right + ' of ' + last.words.length + ' (not counted toward your level).'));
+          state.palace.last = null; save();
+          render(card(h('h3', {}, 'Delayed recall: ' + right + ' of ' + last.words.length), table, h('button', { class: 'primary', autofocus: true, onclick: () => show(0) }, 'Now today\'s list')));
+        }) }, 'Recall it'), h('button', { onclick: () => { state.palace.last = null; save(); show(0); } }, 'Skip'))));
+    } else show(0);
     function show(i) {
       if (i >= n) return recall();
       const timer = countdown(secs, () => show(i + 1));
@@ -365,17 +425,23 @@
         h('button', { onclick: () => timer.finish() }, 'Next')));
     }
     function recall() {
-      const check = h('button', { class: 'primary' }, 'Check');
-      // Enter walks down the list instead of submitting; on the last line it lands on Check, so one more Enter submits.
-      const nextField = (i) => (e) => { if (e.key === 'Enter') { e.preventDefault(); (inputs[i + 1] || check).focus(); } };
-      const inputs = words.map((_, i) => h('input', { type: 'text', autocomplete: 'off', 'aria-label': 'Item at ' + loci[i], autofocus: i === 0, onkeydown: nextField(i) }));
-      render(card(h('h3', {}, 'Walk your route. What was at each stop?'), h('form', { onsubmit: (e) => {
-        e.preventDefault();
-        const right = words.filter((w, i) => normWord(inputs[i].value) === normWord(w)).length;
-        end(right / n, h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'Stop'), h('th', {}, 'Item'), h('th', {}, 'You')),
-          words.map((w, i) => h('tr', { class: normWord(inputs[i].value) === normWord(w) ? 'ok' : 'bad' }, h('td', {}, loci[i]), h('td', {}, w), h('td', {}, inputs[i].value || '—')))));
-      } }, h('ol', { class: 'recall' }, inputs.map((inp, i) => h('li', {}, h('label', {}, loci[i] + ' ', inp)))), check)));
+      recallForm(loci, words, 'Walk your route. What was at each stop?', (right, table) => {
+        state.palace.last = { words, loci: loci.slice(0, n), date: t }; save();
+        end(right / n, h('div', {}, retestNote, table));
+      });
     }
+  }
+  function recallForm(loci, words, title, done) {
+    const check = h('button', { class: 'primary' }, 'Check');
+    // Enter walks down the list instead of submitting; on the last line it lands on Check, so one more Enter submits.
+    const nextField = (i) => (e) => { if (e.key === 'Enter') { e.preventDefault(); (inputs[i + 1] || check).focus(); } };
+    const inputs = words.map((_, i) => h('input', { type: 'text', autocomplete: 'off', 'aria-label': 'Item at ' + loci[i], autofocus: i === 0, onkeydown: nextField(i) }));
+    render(card(h('h3', {}, title), h('form', { onsubmit: (e) => {
+      e.preventDefault();
+      const ok = (i) => normWord(inputs[i].value) === normWord(words[i]);
+      done(words.filter((_, i) => ok(i)).length, h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'Stop'), h('th', {}, 'Item'), h('th', {}, 'You')),
+        words.map((w, i) => h('tr', { class: ok(i) ? 'ok' : 'bad' }, h('td', {}, loci[i]), h('td', {}, w), h('td', {}, inputs[i].value || '—')))));
+    } }, h('ol', { class: 'recall' }, inputs.map((inp, i) => h('li', {}, h('label', {}, loci[i] + ' ', inp)))), check)));
   }
   function palaceSetup(then) {
     const ta = h('textarea', { rows: 12, value: state.palace.loci.join('\n'), placeholder: 'front door\nshoe rack\ncoat hook\n…' });
@@ -390,12 +456,162 @@
         } }, 'Save route'))));
   }
 
+  // ---------- Conversation Recall ----------
+  const canSpeak = () => 'speechSynthesis' in window && typeof SpeechSynthesisUtterance === 'function';
+  function runConvo(end) {
+    const L = state.levels.convo, rng = core.makeRng(core.freshSeed()), p = convo.params(L), intro = convo.makeIntro(rng, L);
+    const face = faces.makePeople(rng, 1, [])[0].face;
+    let replays = p.replays;
+    const go2 = h('button', { class: 'primary', onclick: () => quiz() }, 'I\'m done listening');
+    function listen() {
+      speechSynthesis.cancel();
+      // one utterance per sentence: long single utterances get cut off in some browsers
+      intro.sentences.forEach((text, i) => {
+        const u = new SpeechSynthesisUtterance(text);
+        u.rate = p.rate; u.lang = 'en-US';
+        if (i === intro.sentences.length - 1) u.onend = () => { go2.textContent = 'On to the questions'; go2.focus(); };
+        speechSynthesis.speak(u);
+      });
+    }
+    const replayBtn = h('button', { onclick: () => { if (replays-- > 0) listen(); if (replays <= 0) replayBtn.remove(); } }, 'Replay once');
+    function start(mode) {
+      if (mode === 'read') {
+        const secs = Math.max(15, Math.round(intro.text.split(' ').length / 3)); // about speaking pace
+        render(card(h('div', { class: 'visual', html: faces.faceSvg(face, 130) }), h('p', { class: 'muted center' }, intro.setting),
+          countdown(secs, quiz), h('p', { class: 'spoken' }, intro.text), go2));
+      } else {
+        render(card(h('div', { class: 'visual', html: faces.faceSvg(face, 150) }), h('p', { class: 'muted center' }, intro.setting + '. Listen; the words won\'t be shown.'),
+          h('div', { class: 'row center' }, go2, replays > 0 ? replayBtn : null)));
+        listen();
+      }
+    }
+    function quiz() {
+      if (canSpeak()) speechSynthesis.cancel();
+      clearTimers();
+      const steps = intro.questions.map((q) => mcStep({ prompt: q.q, options: q.options, answer: q.answer }));
+      runSteps(steps, (r, n) => end(r / n, h('div', {}, h('p', {}, r + ' of ' + n + ' correct.'), h('h3', {}, 'What they said'), h('p', { class: 'spoken' }, intro.text))));
+    }
+    render(card(h('h2', {}, 'Someone introduces themselves'), h('p', {}, 'Setting: ' + intro.setting + '. Afterward you\'ll be asked what they told you: names, places, numbers, plans.'),
+      h('div', { class: 'row' }, canSpeak() ? h('button', { class: 'primary big', autofocus: true, onclick: () => start('listen') }, '▶ Listen') : null,
+        h('button', { class: canSpeak() ? '' : 'primary big', onclick: () => start('read') }, canSpeak() ? 'Read it instead' : 'Start (read it)')),
+      canSpeak() ? h('p', { class: 'muted' }, 'Turn your sound on. Listening is closer to real life than reading.') : h('p', { class: 'muted' }, 'This browser can\'t speak text aloud, so you\'ll read it.')));
+  }
+
+  // ---------- Witness ----------
+  function runWitness(end) {
+    const L = state.levels.witness, rng = core.makeRng(core.freshSeed()), w = witness.makeWitness(rng, L);
+    const stage = h('div', { class: 'visual', html: witness.svg(w) });
+    render(card(h('h3', {}, 'Watch closely. No replays.'), stage, h('p', { class: 'muted' }, 'Label each person as they come in, narrate what they do, and keep track of who holds what.')));
+    const root = stage.querySelector('svg');
+    let i = 0;
+    later(() => {
+      const id = every(() => {
+        i++;
+        witness.applyBeat(root, w, i);
+        if (i >= w.beats.length - 1) { clearInterval(id); later(quiz, w.params.beatMs + 400); }
+      }, w.params.beatMs);
+    }, 1200);
+    function quiz() {
+      const steps = w.questions.map((q) => mcStep({ prompt: q.q, options: q.options, answer: q.answer }));
+      runSteps(steps, (r, n) => end(r / n, h('div', {}, h('p', {}, r + ' of ' + n + ' correct.'), h('h3', {}, 'What happened'), h('ol', {}, witness.narration(w).map((x) => h('li', {}, x))))));
+    }
+  }
+
+  // ---------- Describe It ----------
+  function runDescribe(end) {
+    const L = state.levels.describe, s = sceneLib.makeScene(core.makeRng(core.freshSeed()), L), svg = sceneLib.sceneSvg(s);
+    const box = h('textarea', { rows: 6, autofocus: true, placeholder: 'rain outside, clock 3:25, red mug on the table, door open, woman in a green shirt with glasses…' });
+    const timer = countdown(core.byLevel(L, 90, 40), check);
+    render(card(h('h3', {}, 'Describe everything you see'), timer, h('div', { class: 'visual', html: svg }), box,
+      h('p', { class: 'muted' }, 'Facts, not stories: colors, counts, times, what\'s open or on. The room stays visible the whole time.'),
+      h('button', { class: 'primary', onclick: () => timer.finish() }, 'Done')));
+    function check() {
+      const said = box.value, inv = sceneLib.inventory(s);
+      const ticks = inv.map((it) => h('input', { type: 'checkbox', checked: said.trim() && sceneLib.mentioned(it, said) ? true : null }));
+      render(card(h('h3', {}, 'What did your description cover?'),
+        h('p', { class: 'muted' }, 'Pre-ticked items are what keyword matching found. Fix it honestly: tick what you described, untick what you didn\'t.'),
+        h('div', { class: 'visual', html: svg }), h('p', { class: 'spoken' }, said || '(nothing written)'),
+        h('div', { class: 'checklist' }, inv.map((it, k) => h('label', { class: 'radio' }, ticks[k], ' ' + it.label))),
+        h('button', { class: 'primary', onclick: () => {
+          const got = ticks.filter((t) => t.checked).length;
+          end(got / inv.length, h('div', {}, h('p', {}, 'You described ' + got + ' of ' + inv.length + ' things in the room.'),
+            h('p', { class: 'muted' }, 'Missed: ' + (inv.filter((_, k) => !ticks[k].checked).map((it) => it.label).join(', ') || 'nothing'))));
+        } }, 'Score it')));
+    }
+  }
+
+  // ---------- Numbers ----------
+  const KINDS = ['Phone number', 'Part number', 'Locker combo', 'Order number', 'Room code', 'Serial number'];
+  const chunk = (d) => (d.length <= 4 ? d : d.length % 3 === 1 ? chunk(d.slice(0, -4)) + ' ' + d.slice(-4) : d.slice(0, 3) + ' ' + chunk(d.slice(3)));
+  function runNumbers(end) {
+    const L = state.levels.numbers, rng = core.makeRng(core.freshSeed()), digits = core.byLevel(L, 4, 14);
+    const secs = Math.ceil(digits * (1.5 - 0.8 * (L - 1) / 19)), hold = core.byLevel(L, 2, 8), total = 3;
+    const scores = [], rows = [];
+    next(0);
+    function next(k) {
+      if (k >= total) return end(scores.reduce((a, b) => a + b, 0) / total, h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'Number'), h('th', {}, 'You typed'), h('th', {}, 'Digits right')), rows));
+      const num = Array.from({ length: digits }, (_, i) => (i === 0 ? 1 + rng.int(9) : rng.int(10))).join(''), kind = rng.pick(KINDS);
+      const head = h('div', { class: 'muted' }, 'Number ' + (k + 1) + ' / ' + total + ' · ' + digits + ' digits');
+      const timer = countdown(secs, blank);
+      render(card(head, h('h3', {}, kind), timer, h('p', { class: 'digits' }, chunk(num)),
+        L <= 5 ? h('p', { class: 'muted' }, 'Major system: 0 s/z · 1 t/d · 2 n · 3 m · 4 r · 5 l · 6 j/sh · 7 k/g · 8 f/v · 9 p/b') : null,
+        h('button', { onclick: () => timer.finish() }, 'Ready')));
+      function blank() {
+        render(card(head, h('h3', {}, 'Hold it…'), countdown(hold, ask), h('p', { class: 'muted' }, 'Keep it in your head for a few seconds, like walking to where you\'ll write it down.')));
+      }
+      function ask() {
+        const inp = h('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', autofocus: true, 'aria-label': 'Type the number' });
+        render(card(head, h('h3', {}, 'Type the ' + kind.toLowerCase()), h('form', { onsubmit: (e) => {
+          e.preventDefault();
+          const sc = core.digitScore(num, inp.value);
+          scores.push(sc); rows.push(h('tr', { class: sc === 1 ? 'ok' : 'bad' }, h('td', {}, chunk(num)), h('td', {}, inp.value || '—'), h('td', {}, pct(sc))));
+          const typed = inp.value.replace(/\D/g, '');
+          render(card(head, h('p', { class: sc === 1 ? 'ok' : 'bad' }, sc === 1 ? 'Exactly right.' : pct(sc) + ' of the digits in the right place.'),
+            h('p', { class: 'digits' }, num.split('').map((d, i) => h('span', { class: typed[i] === d ? 'ok' : 'bad' }, d))),
+            h('button', { class: 'primary', autofocus: true, onclick: () => next(k + 1) }, 'Next')));
+        } }, inp, h('button', { class: 'primary' }, 'Check'))));
+      }
+    }
+  }
+
+  // ---------- Estimation ----------
+  function runEstimate(end) {
+    const L = state.levels.estimate, rng = core.makeRng(core.freshSeed()), est = state.estimate;
+    est.seen = est.seen && typeof est.seen === 'object' ? est.seen : {};
+    let pool = bank.ESTIMATES.filter((q) => !est.seen[q.id]);
+    if (pool.length < 5) { est.seen = {}; pool = bank.ESTIMATES; }
+    const qs = rng.sample(pool, 5), ratio = core.maxRatio(L);
+    const num = (v) => Number(String(v).replace(/,/g, '').trim());
+    const fmt = (x) => (Math.abs(x) >= 1000 ? Math.round(x).toLocaleString() : String(Math.round(x * 1000) / 1000));
+    const steps = qs.map((q) => (done, progress) => {
+      const lo = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', autofocus: true, 'aria-label': 'Low end' });
+      const hi = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', 'aria-label': 'High end' });
+      const msg = h('p', { class: 'bad', 'aria-live': 'polite' });
+      const form = h('form', { onsubmit: (e) => {
+        e.preventDefault();
+        const a = num(lo.value), b = num(hi.value);
+        if (!isFinite(a) || !isFinite(b) || lo.value.trim() === '' || hi.value.trim() === '') { msg.textContent = 'Enter a number for both ends.'; return; }
+        const r = core.scoreRange(a, b, q.answer, L);
+        est.seen[q.id] = true; est.asked++; if (r.contained) est.contained++; save();
+        form.replaceWith(feedbackBox(r.hit, fmt(q.answer) + ' ' + q.unit,
+          r.contained ? (r.tight ? 'Inside your range, and tight enough to count.' : 'Inside your range, but too wide to count at this level (high ÷ low must be at most ' + Math.round(ratio * 10) / 10 + ').')
+            : 'Outside your range. If this keeps happening, your 90% ranges are really 50% ranges: widen them.', done, h('p', { class: 'muted' }, 'Source: ' + q.source)));
+        main.querySelector('.feedback button').focus();
+      } }, h('div', { class: 'range-in' }, h('label', {}, 'Low', lo), h('label', {}, 'High', hi), h('span', { class: 'unit' }, q.unit)), msg, h('button', { class: 'primary' }, 'Lock in'));
+      render(card(h('div', { class: 'muted' }, progress), h('h3', {}, q.q), h('p', { class: 'muted' }, 'Give a range you\'re 90% sure contains it (' + q.unit + '). Max width at your level: high ÷ low ≤ ' + Math.round(ratio * 10) / 10 + '.'), form));
+    });
+    runSteps(steps, (r, n) => end(r / n, h('div', {}, h('p', {}, r + ' of ' + n + ' ranges counted.'),
+      h('p', { class: 'muted' }, 'All time, your ranges contained the true answer ' + est.contained + ' of ' + est.asked + ' times (' + pct(est.contained / est.asked) + '). Aim for about 90%.'))));
+  }
+
   // ---------- Read the Room ----------
   function runReason(end) {
     const L = state.levels.reason, rng = core.makeRng(core.freshSeed());
     const target = Math.min(3, 1 + Math.floor((L - 1) / 5));
-    const unseen = content.CASES.filter((c) => !state.reason.seen[c.id]);
-    const pool = unseen.length ? unseen : content.CASES;
+    // Your own cases start out "seen", so they only come up once you've worked through the built-in ones.
+    const cases = ALL_CASES.concat(state.reason.custom);
+    const unseen = cases.filter((c) => !state.reason.seen[c.id]);
+    const pool = unseen.length ? unseen : cases;
     const c = pool.filter((x) => x.d === target)[0] ? rng.pick(pool.filter((x) => x.d === target)) : rng.pick(pool);
     const set = rng.pick(content.OI_SETS);
     const steps = rng.sample(set.items, 4).map(([text, kind]) => mcStep({ context: set.scene, prompt: '“' + text + '” Is this an observation or an inference?',
@@ -403,13 +619,14 @@
       explain: kind === 'O' ? 'You could check this directly with your senses.' : 'This goes beyond what was seen. It might be true, but other explanations fit too.' }));
     let caseRight = 0; // the level tracks the case + next-question; the warm-up items are too easy to steer it
     steps.push((done, prog) => caseStep(c, rng)((ok) => { if (ok) caseRight++; done(ok); }, prog));
-    steps.push(mcStep({ context: c.text, prompt: c.next.q, options: rng.shuffle(c.next.options), answer: c.next.options[0], explain: c.next.explain, after: (ok) => { if (ok) caseRight++; } }));
+    const caseItems = c.next ? 2 : 1; // a case you wrote may have no follow-up question
+    if (c.next) steps.push(mcStep({ context: c.text, prompt: c.next.q, options: rng.shuffle(c.next.options), answer: c.next.options[0], explain: c.next.explain, after: (ok) => { if (ok) caseRight++; } }));
     rng.sample(content.BARNUM, 2).forEach(([text, barnum]) => steps.push(mcStep({ prompt: 'A "reader" tells you: “' + text + '” Would this fit most people?',
       options: ['Fits most people (Barnum)', 'Specific to a few'], answer: barnum ? 'Fits most people (Barnum)' : 'Specific to a few',
       explain: barnum ? 'Statements like this feel personal but apply to nearly everyone. That\'s the engine of cold reading.' : 'This is specific and checkable. A real hit on this would mean something.' })));
     // Case questions count double: they're what the level is about, but 2 items alone would make it jump every round.
-    runSteps(steps, (r, n) => end((2 * caseRight + (r - caseRight)) / (4 + n - 2), h('div', {}, h('p', {}, 'Case: ' + caseRight + ' of 2. Warm-ups (observation/inference, Barnum): ' + (r - caseRight) + ' of ' + (n - 2) + '.'),
-      h('p', { class: 'muted' }, 'Case questions count double toward your level. Calibration builds up in Stats.'))));
+    runSteps(steps, (r, n) => end((2 * caseRight + (r - caseRight)) / (2 * caseItems + n - caseItems), h('div', {}, h('p', {}, 'Case: ' + caseRight + ' of ' + caseItems + '. Warm-ups (observation/inference, Barnum): ' + (r - caseRight) + ' of ' + (n - caseItems) + '.'),
+      h('p', { class: 'muted' }, 'Case questions count double toward your level. Calibration builds up in Stats. ', h('a', { href: '#/cases' }, 'Write your own case →')))));
   }
   function caseStep(c, rng) {
     return (done, progress) => {
@@ -428,7 +645,7 @@
         rows.forEach((r) => { r.el.querySelector('input').disabled = true; if (r.o === best) r.el.classList.add('right'); else if (r.o === choice) r.el.classList.add('wrong'); });
         if (firstTime) state.reason.calib.push({ conf: conf.value / 100, correct: ok });
         state.reason.seen[c.id] = true; save();
-        fb.replaceWith(feedbackBox(ok, best, c.explain, done, h('p', { class: 'muted' }, 'Also consider: ' + c.alt)));
+        fb.replaceWith(feedbackBox(ok, best, c.explain, done, c.alt ? h('p', { class: 'muted' }, 'Also consider: ' + c.alt) : null));
         main.querySelector('.feedback button').focus();
       });
       render(card(h('div', { class: 'muted' }, progress), h('p', { class: 'context' }, c.text), h('h3', {}, c.q),
@@ -440,19 +657,137 @@
   // ---------- missions ----------
   function todaysMission() {
     const t = today();
-    if (!state.missions[t]) { state.missions[t] = { idx: core.seedFrom(t) % content.MISSIONS.length, done: false, notes: '' }; save(); }
+    if (!state.missions[t]) { const m = core.pickMission(state.missions, content.MISSIONS, t); state.missions[t] = core.blankEntry(m.id, m.title); save(); }
     return state.missions[t];
   }
+  const goalText = (m) => (m.score.outOf ? 'at least ' + pct(m.score.goal) : m.score.goal + ' of ' + m.score.max);
+  const valueText = (m, v) => (m.score.outOf ? pct(v) : String(v));
+  function scoreLine(m, e) {
+    if (e.got == null) return 'Done.';
+    return (m.score.outOf ? e.got + ' / ' + e.total : e.got + ' / ' + m.score.max) + (e.hit === true ? ' · goal reached' : e.hit === false ? ' · goal missed' : '');
+  }
+  function missionBadge(m) {
+    if (m.legacy) return null;
+    return h('div', { class: 'badges' }, h('span', { class: 'badge' }, content.TRACKS[m.track] + ' · tier ' + m.tier), m.partner ? h('span', { class: 'badge partner' }, 'with a friend') : null);
+  }
+  const missionCalib = () => Object.values(state.missions).filter((e) => e.done && e.predict != null && e.hit != null).map((e) => ({ conf: e.predict, correct: e.hit }));
+
   function missions() {
-    const m = todaysMission();
-    const notes = h('textarea', { rows: 5, value: m.notes, placeholder: 'What did you notice? What surprised you? What would you do differently?', oninput: (e) => { m.notes = e.target.value; save(); } });
-    const past = Object.entries(state.missions).filter(([d]) => d !== today()).sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 30);
-    render(card(h('h2', {}, 'Mission of the day'), h('h3', {}, missionAt(m)[0]), h('p', {}, missionAt(m)[1]), notes,
-      h('div', { class: 'row' },
-        h('button', { class: m.done ? '' : 'primary', onclick: () => { m.done = !m.done; save(); missions(); } }, m.done ? '✓ Done (undo)' : 'Mark done'),
-        h('button', { onclick: () => { m.idx = (m.idx + 1) % content.MISSIONS.length; m.done = false; m.notes = ''; save(); missions(); } }, 'Swap mission')),
-      h('p', { class: 'muted' }, 'Missions are where the skill moves into real life. Drills alone mostly make you better at drills.')),
-    past.length ? card(h('h2', {}, 'Mission log'), h('ul', { class: 'log' }, past.map(([d, x]) => h('li', {}, h('b', {}, d + ' · ' + missionAt(x)[0] + (x.done ? ' ✓' : '')), x.notes ? h('p', {}, x.notes) : null)))) : null);
+    const t = today(), e = todaysMission(), m = missionOf(e);
+    const due = core.dueCallbacks(state.missions, content.MISSIONS, t);
+    const past = Object.entries(state.missions).filter(([d]) => d !== t).sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 30);
+    render(
+      due.length ? callbackCard(due[0], due.length) : null,
+      card(missionBadge(m), h('h2', {}, m.title), h('p', {}, m.text), e.done ? missionResult(m, e) : checkIn(m, e)),
+      tracksCard(),
+      past.length ? card(h('h2', {}, 'Mission log'), h('ul', { class: 'log' }, past.map(([d, x]) => {
+        const pm = missionOf(x);
+        return h('li', {}, h('b', {}, niceDate(d) + ' · ' + pm.title + (x.done ? ' ✓' : '')), x.done ? h('span', { class: 'muted' }, ' ' + scoreLine(pm, x)) : null,
+          x.items.some((i) => i.trim()) ? h('p', {}, x.items.filter((i) => i.trim()).join(' · ')) : null, x.notes ? h('p', { class: 'muted' }, x.notes) : null);
+      }))) : null);
+  }
+
+  function checkIn(m, e) {
+    const t = today();
+    const nodes = [];
+    // Predict before doing it: a probability that feeds your calibration score.
+    if (m.score.goal != null) {
+      if (e.predict == null) {
+        const conf = h('input', { type: 'range', min: 5, max: 95, step: 5, value: 50, 'aria-label': 'Chance you reach the goal' });
+        const out = h('output', {}, '50%');
+        conf.addEventListener('input', () => { out.textContent = conf.value + '%'; });
+        nodes.push(h('div', { class: 'predict' }, h('h3', {}, 'Predict first'), h('p', {}, 'How likely are you to reach the goal: ' + goalText(m) + '?'),
+          h('label', { class: 'conf' }, conf, ' ', out), h('button', { onclick: () => { e.predict = conf.value / 100; save(); missions(); } }, 'Lock in prediction'),
+          h('p', { class: 'muted' }, 'Optional, but it\'s what turns a mission into a calibration check. Lock it in before you start.')));
+      } else nodes.push(h('p', { class: 'muted' }, 'Your prediction: ' + pct(e.predict) + ' that you\'ll reach ' + goalText(m) + '.'));
+    }
+    // What to log: people go to the People Log; items come back later as a callback.
+    const people = m.log && m.log.people ? Array.from({ length: m.log.people }, (_, i) => ({
+      name: h('input', { type: 'text', autocomplete: 'off', value: e.people[i] || '', 'aria-label': 'Name ' + (i + 1) }),
+      told: h('input', { type: 'text', autocomplete: 'off', placeholder: 'something they told you', 'aria-label': 'What person ' + (i + 1) + ' told you' }) })) : [];
+    const items = m.log && m.log.items ? m.log.items.map((label, i) => h('input', { type: 'text', autocomplete: 'off', value: e.items[i] || '', 'aria-label': label, placeholder: label })) : [];
+    const max = m.score.max;
+    let got = e.got;
+    const pills = !m.score.outOf && max <= 10
+      ? h('div', { class: 'pills', role: 'group', 'aria-label': m.score.label }, Array.from({ length: max + 1 }, (_, v) => h('button', { type: 'button', class: 'pill', 'aria-pressed': String(got === v),
+        onclick: (ev) => { got = v; ev.currentTarget.parentNode.querySelectorAll('.pill').forEach((b, j) => b.setAttribute('aria-pressed', String(j === v))); } }, v)))
+      : null;
+    const gotIn = pills ? null : h('input', { type: 'number', min: 0, max: m.score.outOf ? null : max, inputmode: 'numeric', value: e.got == null ? '' : e.got, 'aria-label': m.score.outOf ? 'How many you got' : m.score.label });
+    const totalIn = m.score.outOf ? h('input', { type: 'number', min: 1, inputmode: 'numeric', value: e.total == null ? '' : e.total, 'aria-label': 'Out of how many' }) : null;
+    const notes = h('textarea', { rows: 3, value: e.notes, placeholder: 'Optional: what did you notice? What surprised you?', oninput: (ev) => { e.notes = ev.target.value; save(); } });
+    const msg = h('p', { class: 'bad', 'aria-live': 'polite' });
+    nodes.push(h('form', { class: 'stack checkin', onsubmit: (ev) => {
+      ev.preventDefault();
+      const g = pills ? got : gotIn.value === '' ? null : Number(gotIn.value);
+      const tot = totalIn ? Number(totalIn.value) : null;
+      if (g == null || !(g >= 0) || (!m.score.outOf && g > max) || (m.score.outOf && !(tot >= 1 && g <= tot))) {
+        msg.textContent = m.score.outOf ? 'Enter how many you got and out of how many (at least 1).' : 'Pick your score first.'; return;
+      }
+      e.tierBefore = core.unlockedTier(state.missions, content.MISSIONS, m.track);
+      e.items = items.map((x) => x.value.trim());
+      const newPeople = people.filter((p) => p.name.value.trim());
+      if (!e.peopleAdded) newPeople.forEach((p) => state.people.push(Object.assign({ id: 'r' + Date.now() + Math.random().toString(36).slice(2, 6), source: 'real', met: t,
+        name: p.name.value.trim(), context: 'Mission: ' + m.title, detail: p.told.value.trim(), feature: '' }, core.newCard(t))));
+      e.people = newPeople.map((p) => p.name.value.trim());
+      e.peopleAdded = e.peopleAdded || newPeople.length > 0;
+      Object.assign(e, { got: g, total: tot, hit: core.missionHit(m, g, tot), done: true, title: m.title });
+      save(); missions();
+    } },
+      h('h3', {}, 'Check in'),
+      people.length ? h('div', {}, h('p', { class: 'muted' }, 'Log them from memory. They go straight into your People Log for spaced review.'),
+        people.map((p, i) => h('div', { class: 'pair-in' }, h('label', {}, 'Person ' + (i + 1), p.name), h('label', {}, 'What they told you', p.told)))) : null,
+      items.length ? h('div', {}, h('p', { class: 'muted' }, 'Write these from memory. They come back in ' + (m.callbackDays || 3) + ' days for a recall check.'),
+        items.map((x, i) => h('label', {}, (items.length > 1 ? (i + 1) + '. ' : '') + m.log.items[i], x))) : null,
+      h('label', {}, m.score.label + (m.score.goal != null ? ' (goal: ' + goalText(m) + ')' : ''), pills || h('div', { class: 'row' }, gotIn, totalIn ? h('span', {}, ' out of ') : null, totalIn)),
+      h('label', {}, 'Notes', notes), msg,
+      h('div', { class: 'row' }, h('button', { class: 'primary big' }, 'Complete mission'),
+        h('button', { type: 'button', onclick: () => {
+          e.skipped = e.skipped.concat(e.id);
+          let next = core.pickMission(state.missions, content.MISSIONS, t, e.skipped);
+          if (e.skipped.includes(next.id)) { e.skipped = [e.id]; next = core.pickMission(state.missions, content.MISSIONS, t, e.skipped); } // went through them all: start over
+          state.missions[t] = Object.assign(core.blankEntry(next.id, next.title), { skipped: e.skipped });
+          save(); missions();
+        } }, 'Swap mission'))));
+    return h('div', {}, nodes);
+  }
+
+  function missionResult(m, e) {
+    const t = today(), v = core.missionValue(m, e), pb = core.personalBest(state.missions, content.MISSIONS, m.id, t);
+    const tierNow = core.unlockedTier(state.missions, content.MISSIONS, m.track);
+    const lines = [];
+    if (e.hit != null) lines.push(h('p', { class: e.hit ? 'ok' : 'muted' }, e.hit ? 'Goal reached (' + goalText(m) + ').' : 'Goal not reached this time (' + goalText(m) + '). Same mission, another day.'));
+    if (e.predict != null && e.hit != null) lines.push(h('p', {}, 'You gave it ' + pct(e.predict) + (e.hit ? ' and made it.' : ' and missed.') + ' This counts toward your calibration in Stats.'));
+    if (v != null) lines.push(h('p', {}, pb == null ? 'First time: this sets your personal best.' : v > pb ? h('b', { class: 'ok' }, 'New personal best! (was ' + valueText(m, pb) + ')') : 'Personal best: ' + valueText(m, pb) + '.'));
+    if (e.tierBefore && tierNow > e.tierBefore) lines.push(h('p', { class: 'ok' }, h('b', {}, content.TRACKS[m.track] + ' tier ' + tierNow + ' unlocked.'), ' Harder missions in this track can now come up.'));
+    if (e.people.length) lines.push(h('p', {}, 'Added ' + e.people.join(', ') + ' to your People Log. First review: tomorrow.'));
+    if (e.items.some((x) => x.trim())) lines.push(h('p', { class: 'muted' }, 'In ' + (m.callbackDays || 3) + ' days you\'ll be asked to recall what you logged, without looking.'));
+    return h('div', { class: 'result' },
+      h('div', { class: 'score-big' + (e.hit ? ' celebrate' : '') }, e.got == null ? '✓' : m.score.outOf ? e.got + ' / ' + e.total : e.got + ' / ' + m.score.max),
+      h('p', { class: 'muted center' }, m.score.label), lines,
+      h('div', { class: 'row' }, h('a', { class: 'button', href: '#/' }, 'Home'),
+        h('button', { onclick: () => { e.done = false; save(); missions(); } }, 'Edit check-in')));
+  }
+
+  // A few days later: recall what you logged, then compare.
+  function callbackCard(day, count) {
+    const e = state.missions[day], m = missionOf(e), logged = e.items.map((x, i) => [m.log && m.log.items ? m.log.items[i] : '', x]).filter(([, x]) => x.trim());
+    const reveal = h('div', {}, h('button', { class: 'primary', onclick: () => reveal.replaceChildren(
+      h('ul', {}, logged.map(([label, x]) => h('li', {}, logged.length > 1 && label ? h('span', { class: 'muted' }, label + ': ') : null, x))),
+      h('p', {}, 'How many did you remember?'),
+      h('div', { class: 'pills' }, Array.from({ length: logged.length + 1 }, (_, v) => h('button', { class: 'pill', onclick: () => { e.callback = { date: today(), got: v, of: logged.length }; save(); missions(); } }, v)))) }, 'Reveal what you logged'));
+    return card(h('h2', {}, 'Callback' + (count > 1 ? ' (' + count + ' waiting)' : '')),
+      h('p', {}, 'On ' + niceDate(day) + ' you did ', h('b', {}, m.title), '. Without looking: what did you log?'),
+      h('ul', { class: 'muted' }, logged.map(([label]) => h('li', {}, label || 'item'))),
+      h('p', { class: 'muted' }, 'Say or jot it from memory first. Delayed recall is the real test of whether it stuck.'), reveal);
+  }
+
+  function tracksCard() {
+    return card(h('h2', {}, 'Tracks'), h('p', { class: 'muted' }, 'Finish two missions at a tier to unlock the next one in that track. One track comes up each day; swapping can pull from any.'),
+      h('ul', { class: 'tracks' }, Object.entries(content.TRACKS).map(([id, name]) => {
+        const tier = core.unlockedTier(state.missions, content.MISSIONS, id);
+        const doneAt = (k) => Object.values(state.missions).filter((e) => e.done && content.MISSIONS.some((m) => m.id === e.id && m.track === id && m.tier === k)).length;
+        return h('li', {}, h('b', {}, name), ' ', [1, 2, 3].map((k) => h('span', { class: 'tier' + (k <= tier ? ' open' : '') }, k <= tier ? 'Tier ' + k + ': ' + doneAt(k) + ' done' : 'Tier ' + k + ' 🔒')));
+      })));
   }
 
   // ---------- People Log (real people) ----------
@@ -491,6 +826,40 @@
       h('p', { class: 'muted' }, 'Say it out loud before revealing it.'), reveal));
   }
 
+  // ---------- write your own cases ----------
+  // Writing a case is practice too: you have to find the clue that separates the explanations. A friend can also write cases for you.
+  function caseEditor() {
+    const f = (ph, rows) => (rows ? h('textarea', { rows, placeholder: ph }) : h('input', { type: 'text', autocomplete: 'off', placeholder: ph }));
+    const fld = { text: f('What you see: concrete observations only (who, what, where, marks, objects, times)', 4), q: f('What is the most likely explanation?'),
+      best: f('The best-supported answer'), w1: f('Another option'), w2: f('Another option'), w3: f('Another option'),
+      explain: f('Why the best answer wins: which clues point to it', 3), alt: f('Optional: the strongest alternative, and why it loses'),
+      nq: f('Optional follow-up: which question or check would tell them apart?'), nbest: f('The best check'), n1: f('Another check'), n2: f('Another check'), n3: f('Another check'),
+      nexplain: f('Why that check is the most informative') };
+    fld.q.value = 'What is the most likely explanation?';
+    const msg = h('p', { class: 'bad', 'aria-live': 'polite' });
+    const mine = state.reason.custom;
+    render(card(h('h2', {}, 'Write a case'), h('p', { class: 'muted' }, 'Your cases join Read the Room once you\'ve worked through the built-in ones. Calibration ignores them, since you know the answers. Have a friend write some for you too.'),
+      h('form', { class: 'stack', onsubmit: (e) => {
+        e.preventDefault();
+        const v = (k) => fld[k].value.trim();
+        const opts = [v('best'), v('w1'), v('w2'), v('w3')], nopts = [v('nbest'), v('n1'), v('n2'), v('n3')];
+        if (!v('text') || !v('q') || !v('explain') || opts.some((o) => !o)) { msg.textContent = 'Fill in the situation, the question, all four answers and why.'; return; }
+        if (new Set(opts).size < 4) { msg.textContent = 'The four answers need to be different.'; return; }
+        const hasNext = v('nq') || nopts.some(Boolean);
+        if (hasNext && (!v('nq') || nopts.some((o) => !o) || new Set(nopts).size < 4)) { msg.textContent = 'For the follow-up, fill in the question and four different checks, or leave it all empty.'; return; }
+        const c = { id: 'u' + Date.now(), d: 2, text: v('text'), q: v('q'), options: opts, explain: v('explain'), alt: v('alt') };
+        if (hasNext) c.next = { q: v('nq'), options: nopts, explain: v('nexplain') };
+        state.reason.custom.push(c); state.reason.seen[c.id] = true; save(); caseEditor();
+      } },
+        h('label', {}, 'Situation', fld.text), h('label', {}, 'Question', fld.q), h('label', {}, 'Best answer', fld.best),
+        h('label', {}, 'Other answers (plausible, but less supported)', fld.w1, fld.w2, fld.w3), h('label', {}, 'Explanation', fld.explain), h('label', {}, 'Strongest alternative', fld.alt),
+        h('details', {}, h('summary', {}, 'Add a follow-up question (optional)'), h('label', {}, 'Follow-up question', fld.nq), h('label', {}, 'Best check', fld.nbest),
+          h('label', {}, 'Other checks', fld.n1, fld.n2, fld.n3), h('label', {}, 'Why', fld.nexplain)),
+        msg, h('button', { class: 'primary' }, 'Save case'))),
+      mine.length ? card(h('h2', {}, 'Your cases (' + mine.length + ')'), h('ul', { class: 'log' }, mine.map((c) => h('li', {}, h('p', {}, c.text), h('p', { class: 'muted' }, 'Best answer: ' + c.options[0]),
+        h('button', { class: 'small', onclick: () => { if (confirm('Delete this case?')) { state.reason.custom = state.reason.custom.filter((x) => x !== c); save(); caseEditor(); } } }, 'Delete'))))) : null);
+  }
+
   // ---------- learn ----------
   function learn() {
     render(card(h('h2', {}, 'The science, honestly'), content.SCIENCE.map(([title, items]) => h('div', {}, h('h3', {}, title), h('ul', {}, items.map((x) => h('li', {}, x)))))),
@@ -511,15 +880,38 @@
       return h('tr', {}, h('td', {}, TITLES[d]), h('td', {}, state.levels[d]), h('td', {}, hs.length),
         h('td', {}, last.length ? pct(last.reduce((s, x) => s + x.acc, 0) / last.length) : '—'), h('td', { html: sparkline(hs.map((x) => x.level).concat(state.levels[d])) }));
     });
-    const calib = state.reason.calib, b = core.brier(calib);
+    const caseCalib = state.reason.calib, mCalib = missionCalib(), calib = caseCalib.concat(mCalib), b = core.brier(calib), est = state.estimate;
     render(
+      weekCard(),
       card(h('h2', {}, 'Progress'), h('p', { class: 'muted' }, 'Practiced ' + core.daysPracticed(state.history, today(), 30) + ' of the last 30 days. ' + state.history.length + ' rounds total.'),
         h('div', { class: 'scroll' }, h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'Drill'), h('th', {}, 'Level'), h('th', {}, 'Rounds'), h('th', {}, 'Last 10 avg'), h('th', {}, 'Level trend')), rows))),
       card(h('h2', {}, 'Calibration'),
-        h('p', {}, calib.length ? (calib.length < 5 ? 'Only ' + calib.length + ' case' + (calib.length === 1 ? '' : 's') + ' so far. The score gets meaningful after 10 or more. ' : '') + 'Brier score: ' + b.toFixed(3) + '. 0 is perfect. Always answering at 60% confidence and being right 60% of the time scores 0.24. Lower is better.' : 'Do some Read the Room rounds to see how well your confidence matches reality.'),
-        calib.length ? h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'When you said'), h('th', {}, 'Cases'), h('th', {}, 'You were right')),
+        h('p', {}, calib.length ? (calib.length < 5 ? 'Only ' + calib.length + ' call' + (calib.length === 1 ? '' : 's') + ' so far. The score gets meaningful after 10 or more. ' : '') + 'Brier score: ' + b.toFixed(3) + ' (' + caseCalib.length + ' case' + (caseCalib.length === 1 ? '' : 's') + ', ' + mCalib.length + ' mission prediction' + (mCalib.length === 1 ? '' : 's') + '). 0 is perfect. Always answering at 60% confidence and being right 60% of the time scores 0.24. Lower is better.' : 'Do some Read the Room rounds, or predict a mission, to see how well your confidence matches reality.'),
+        calib.length ? h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'When you said'), h('th', {}, 'Calls'), h('th', {}, 'You were right')),
           core.calibrationTable(calib).map((r) => h('tr', {}, h('td', {}, r.label), h('td', {}, r.n), h('td', {}, r.hitRate == null ? '—' : pct(r.hitRate))))) : null,
+        est.asked ? h('p', {}, 'Estimation: your 90% ranges contained the true answer ' + est.contained + ' of ' + est.asked + ' times (' + pct(est.contained / est.asked) + ').') : null,
         h('p', { class: 'muted' }, 'Well calibrated means your 90% calls are right about 90% of the time. Overconfidence (right much less often than you claimed) is the usual pattern, and the one Patrick Jane would have.')));
+  }
+  // The weekly debrief: what the last 7 days added up to.
+  function weekCard() {
+    const t = today(), from = core.addDays(t, -6), inWeek = (d) => d >= from && d <= t;
+    const rounds = state.history.filter((x) => inWeek(x.date));
+    const moved = core.DRILLS.map((d) => { const first = rounds.find((x) => x.drill === d); return first && state.levels[d] !== first.level ? TITLES[d] + ' ' + first.level + ' → ' + state.levels[d] : null; }).filter(Boolean);
+    const week = Object.entries(state.missions).filter(([d, e]) => inWeek(d) && e.done);
+    const pbs = week.filter(([d, e]) => { const m = missionOf(e), v = core.missionValue(m, e); if (m.legacy || v == null) return false;
+      const prior = Object.entries(state.missions).filter(([d2, e2]) => d2 < d && e2.id === e.id && e2.done).map(([, e2]) => core.missionValue(m, e2)).filter((x) => x != null);
+      return prior.length && v > Math.max(...prior); });
+    const met = state.people.filter((p) => p.source === 'real' && inWeek(p.met)).length;
+    const cbs = Object.values(state.missions).filter((e) => e.callback && inWeek(e.callback.date));
+    const li = (label, value) => h('li', {}, label + ': ', h('b', {}, value));
+    return card(h('h2', {}, 'Your week'), h('p', { class: 'muted' }, niceDate(from) + ' – ' + niceDate(t)),
+      h('ul', { class: 'week' },
+        li('Days practiced', core.daysPracticed(state.history, t, 7) + ' of 7'), li('Drill rounds', rounds.length),
+        li('Missions done', week.length + (week.length ? ' (goal reached in ' + week.filter(([, e]) => e.hit).length + ')' : '')),
+        li('Real people added to your People Log', met),
+        pbs.length ? li('Personal bests', pbs.map(([, e]) => missionOf(e).title).join(', ')) : null,
+        cbs.length ? li('Callback items recalled', cbs.reduce((s, e) => s + e.callback.got, 0) + ' of ' + cbs.reduce((s, e) => s + e.callback.of, 0)) : null),
+      moved.length ? h('p', {}, 'Levels moved: ' + moved.join(' · ')) : h('p', { class: 'muted' }, 'No level changes this week yet.'));
   }
 
   // ---------- settings ----------
@@ -542,6 +934,7 @@
     });
     render(
       card(h('h2', {}, 'Habit cue'), h('div', { class: 'row' }, intent, h('button', { onclick: (e) => { state.intention = intent.value.trim(); save(); e.target.textContent = 'Saved ✓'; } }, 'Save'))),
+      card(h('h2', {}, 'Your Read the Room cases'), h('p', { class: 'muted' }, state.reason.custom.length + ' written so far.'), h('a', { class: 'button', href: '#/cases' }, 'Write or manage cases')),
       card(h('h2', {}, 'Memory palace route'), h('p', {}, state.palace.loci.length ? state.palace.loci.join(' → ') : 'Not set up yet.'), h('button', { onclick: () => palaceSetup(settings) }, 'Edit route')),
       card(h('h2', {}, 'Your data'), h('p', { class: 'muted' }, 'Progress lives only in this browser (localStorage). Export a backup now and then, especially before clearing browser data.'),
         h('div', { class: 'row' },

@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sharp</title>
+<meta name="theme-color" content="#1f6f5c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Sharp">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -23,6 +29,13 @@
 <script src="js/faces.js"></script>
 <script src="js/scene.js"></script>
 <script src="js/content.js"></script>
+<script src="js/bank.js"></script>
+<script src="js/convo.js"></script>
+<script src="js/witness.js"></script>
 <script src="js/app.js"></script>
+<script>
+  // Offline support when served over http(s), e.g. GitHub Pages. Not available from a file:// page, which is fine.
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js');
+</script>
 </body>
 </html>

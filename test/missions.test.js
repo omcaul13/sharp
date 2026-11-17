@@ -94,12 +94,10 @@ test('old mission logs are upgraded by title and bad entries dropped', () => {
 });
 
 test('migrate validates the new fields', () => {
-  const s = core.migrate({ palace: { loci: ['a'], last: { words: [1] } }, reason: { seen: {}, calib: [{ conf: 0.7, correct: true }, { conf: 'x' }], custom: [{ id: 'u1' }] },
-    missionCalib: [{ conf: 0.5, correct: false }, null], rooms: [{ seed: 3, level: 2, date: '2026-11-01' }, { seed: 'x' }], estimate: { asked: -1 } });
+  const s = core.migrate({ palace: { loci: ['a'], last: { words: [1] } }, reason: { seen: {}, calib: [{ conf: 0.7, correct: true }, { conf: 'x' }], custom: [{ id: 'u1' }] }, rooms: [{ seed: 3, level: 2, date: '2026-11-01' }, { seed: 'x' }], estimate: { asked: -1 } });
   assert.equal(s.palace.last, null);
   assert.equal(s.reason.calib.length, 1);
   assert.deepEqual(s.reason.custom, []);
-  assert.equal(s.missionCalib.length, 1);
   assert.equal(s.rooms.length, 1);
   assert.deepEqual(s.estimate, { asked: 0, contained: 0 });
   for (const d of core.DRILLS) assert.equal(s.levels[d], 1);
