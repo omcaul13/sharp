@@ -61,7 +61,9 @@ test('workout has one drill per family, is stable for a day, and prefers neglect
   const a = core.planWorkout([], '2026-11-15');
   assert.deepEqual(a, core.planWorkout([], '2026-11-15'));
   core.FAMILIES.forEach((fam, i) => assert.ok(fam.includes(a[i])));
-  const plan = core.planWorkout([{ drill: 'scene', date: '2026-11-14', ts: 5 }, { drill: 'glance', date: '2026-11-14', ts: 5 }], '2026-11-15');
+  // every drill except change and palace was practiced yesterday, so those two are the neglected ones
+  const played = core.DRILLS.filter((d) => d !== 'change' && d !== 'palace').map((drill) => ({ drill, date: '2026-11-14', ts: 5 }));
+  const plan = core.planWorkout(played, '2026-11-15');
   assert.equal(plan[1], 'change');
   assert.equal(plan[2], 'palace');
 });
@@ -72,7 +74,7 @@ test('migrate fills missing fields and survives junk', () => {
   assert.equal(s.levels.scene, 7);
   assert.equal(s.levels.faces, 1);
   assert.equal(s.history.length, 1);
-  assert.deepEqual(s.palace, { loci: [] });
+  assert.deepEqual(s.palace, { loci: [], last: null });
 });
 
 test('recordRound logs and adapts', () => {
@@ -163,10 +165,10 @@ test('plan does not change after finishing a drill today', () => {
 test('migrate rejects wrongly shaped fields from a bad import', () => {
   const s = core.migrate({ history: {}, palace: {}, people: [{ source: 'real' }, null], levels: { scene: 999 }, reason: [], missions: { x: null } });
   assert.deepEqual(s.history, []);
-  assert.deepEqual(s.palace, { loci: [] });
+  assert.deepEqual(s.palace, { loci: [], last: null });
   assert.deepEqual(s.people, []);
   assert.equal(s.levels.scene, 1);
-  assert.deepEqual(s.reason, { seen: {}, calib: [] });
+  assert.deepEqual(s.reason, { seen: {}, calib: [], custom: [] });
   assert.deepEqual(s.missions, {});
   assert.deepEqual(core.migrate('x'), core.defaultState());
 });

@@ -121,7 +121,31 @@
     return '<svg viewBox="0 0 100 120" width="' + s + '" height="' + Math.round(s * 1.2) + '" role="img" aria-label="' + label + '" xmlns="http://www.w3.org/2000/svg">' + p.join('') + '</svg>';
   }
 
-  const api = { makeFace, makePeople, faceSvg, faceDistance, describe, SHIRTS, HAIR_COLORS, JOBS, DETAILS, FIRST };
+  // A returning person with one visible style change; identity features (skin, ears, brows, freckles, shirt, hat) stay.
+  function restyle(face, rng) {
+    const f = Object.assign({}, face);
+    const other = (arr, v) => rng.pick(arr.filter((x) => x !== v));
+    // hair color shows only where hair is drawn: not bald, and not fully under a hat
+    if (f.hair !== 'bald' && (f.hat === 'none' || f.hair === 'long') && rng.next() < 0.1) {
+      f.hairColor = other(Object.keys(HAIR_COLORS), f.hairColor); return { face: f, change: 'new hair color' };
+    }
+    const kinds = ['glasses', 'facial'].concat(f.hat === 'none' ? ['hair'] : []); // a hat hides the haircut
+    const kind = rng.pick(kinds);
+    if (kind === 'glasses') {
+      if (f.glasses === 'none') f.glasses = rng.pick(['round', 'square']);
+      else f.glasses = rng.next() < 0.5 ? 'none' : f.glasses === 'round' ? 'square' : 'round';
+      return { face: f, change: f.glasses === 'none' ? 'no glasses now' : 'new glasses' };
+    }
+    if (kind === 'hair') {
+      f.hair = other(HAIR_STYLES, f.hair);
+      return { face: f, change: f.hair === 'bald' ? 'shaved head' : 'a new haircut' };
+    }
+    if (f.facial === 'beard' || f.facial === 'mustache') { const was = f.facial; f.facial = 'none'; return { face: f, change: 'shaved the ' + was }; }
+    f.facial = f.facial === 'stubble' ? 'beard' : rng.pick(['beard', 'mustache']); // stubble is too faint to be the change itself
+    return { face: f, change: 'grew a ' + f.facial };
+  }
+
+  const api = { makeFace, makePeople, faceSvg, faceDistance, describe, restyle, SHIRTS, HAIR_COLORS, JOBS, DETAILS, FIRST };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else (root.Sharp = root.Sharp || {}).faces = api;
 })(typeof window !== 'undefined' ? window : globalThis);

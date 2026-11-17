@@ -91,26 +91,114 @@
 
   // ---------- daily workout ----------
   // One drill from each skill family, interleaved; within a family pick the least recently practiced.
-  const FAMILIES = [['faces'], ['scene', 'change'], ['glance', 'palace'], ['reason']];
-  function planWorkout(history, today) {
-    const rng = makeRng(seedFrom(today));
+  const FAMILIES = [['faces', 'convo'], ['scene', 'change', 'witness', 'describe'], ['glance', 'palace', 'numbers'], ['reason', 'estimate']];
+  const QUICK = ['glance', 'change', 'numbers', 'reason', 'estimate']; // short drills for commute mode
+  function lastPlayed(history, today) {
     const last = {};
     // only rounds before today, so finishing a drill doesn't reshuffle today's plan
     for (const h of history) if (h.date < today && (!last[h.drill] || h.ts > last[h.drill])) last[h.drill] = h.ts;
-    return FAMILIES.map((fam) => {
-      const shuffled = rng.shuffle(fam);
-      return shuffled.reduce((best, d) => ((last[d] || 0) < (last[best] || 0) ? d : best), shuffled[0]);
-    });
+    return last;
+  }
+  const leastRecent = (fam, last, rng) => rng.shuffle(fam).reduce((best, d) => ((last[d] || 0) < (last[best] || 0) ? d : best));
+  function planWorkout(history, today) {
+    const rng = makeRng(seedFrom(today)), last = lastPlayed(history, today);
+    return FAMILIES.map((fam) => leastRecent(fam, last, rng));
+  }
+  // Commute mode: two quick drills, least recently practiced first.
+  function planCommute(history, today) {
+    const rng = makeRng(seedFrom('c' + today)), last = lastPlayed(history, today);
+    const first = leastRecent(QUICK, last, rng);
+    return [first, leastRecent(QUICK.filter((d) => d !== first), last, rng)];
+  }
+
+  // ---------- drill scoring helpers ----------
+  // Numbers: share of digits recalled in the right position (non-digits ignored).
+  function digitScore(target, typed) {
+    const t = String(target).replace(/\D/g, ''), y = String(typed).replace(/\D/g, '');
+    let ok = 0;
+    for (let i = 0; i < t.length; i++) if (y[i] === t[i]) ok++;
+    return t.length ? ok / t.length : 0;
+  }
+  // Estimation: the allowed high/low ratio shrinks geometrically from 100x at level 1 to 3x at level 20, so huge "safe" ranges stop paying.
+  function maxRatio(level) {
+    const t = (Math.min(LEVEL_MAX, Math.max(LEVEL_MIN, level)) - LEVEL_MIN) / (LEVEL_MAX - LEVEL_MIN);
+    return Math.pow(100, 1 - t) * Math.pow(3, t);
+  }
+  function scoreRange(low, high, answer, level) {
+    const lo = Math.min(low, high), hi = Math.max(low, high);
+    const contained = lo <= answer && answer <= hi;
+    const tight = lo > 0 && hi / lo <= maxRatio(level) + 1e-9;
+    return { contained, tight, hit: contained && tight };
+  }
+
+  // ---------- missions ----------
+  // Entry per day: { id, title, done, notes, predict, items, people, got, total, hit, callback, skipped }.
+  const blankEntry = (id, title) => ({ id, title, done: false, notes: '', predict: null, items: [], people: [], got: null, total: null, hit: null, callback: null, skipped: [] });
+  const missionValue = (m, e) => (e.got == null ? null : m.score.outOf ? (e.total ? e.got / e.total : null) : e.got);
+  function missionHit(m, got, total) {
+    if (m.score.goal == null || got == null) return null;
+    return m.score.outOf ? total > 0 && got / total >= m.score.goal : got >= m.score.goal;
+  }
+  // Tier 2 of a track opens after 2 finished tier-1 missions in it; tier 3 after 2 finished tier-2 ones.
+  function unlockedTier(log, missions, track) {
+    const done = [0, 0, 0, 0];
+    for (const e of Object.values(log)) { const m = missions.find((x) => x.id === e.id); if (e.done && m && m.track === track) done[m.tier]++; }
+    return done[1] < 2 ? 1 : done[2] < 2 ? 2 : 3;
+  }
+  // Today's track rotates daily. Within it: least recently done unlocked mission, higher tiers first. Other tracks follow (for swaps).
+  function pickMission(log, missions, today, exclude) {
+    exclude = exclude || [];
+    const tracks = [...new Set(missions.map((m) => m.track))];
+    const n = tracks.length, track = tracks[((daysBetween('2026-01-05', today) % n) + n) % n];
+    const lastDone = {};
+    for (const [d, e] of Object.entries(log)) if (e.done && d < today && (!lastDone[e.id] || d > lastDone[e.id])) lastDone[e.id] = d;
+    const rng = makeRng(seedFrom(today)), jitter = {};
+    missions.forEach((m) => { jitter[m.id] = rng.next(); });
+    const tiers = {};
+    tracks.forEach((t) => { tiers[t] = unlockedTier(log, missions, t); });
+    const open = missions.filter((m) => m.tier <= tiers[m.track]).sort((a, b) =>
+      ((a.track !== track) - (b.track !== track)) || (lastDone[a.id] || '').localeCompare(lastDone[b.id] || '') || (b.tier - a.tier) || (jitter[a.id] - jitter[b.id]));
+    return open.find((m) => !exclude.includes(m.id)) || open[0];
+  }
+  function personalBest(log, missions, id, exceptDay) {
+    const m = missions.find((x) => x.id === id);
+    let best = null;
+    if (m) for (const [d, e] of Object.entries(log)) {
+      if (d === exceptDay || e.id !== id || !e.done) continue;
+      const v = missionValue(m, e);
+      if (v != null && (best == null || v > best)) best = v;
+    }
+    return best;
+  }
+  // Logged items come back for a recall check a few days later (oldest first).
+  function dueCallbacks(log, missions, today) {
+    return Object.entries(log).filter(([d, e]) => {
+      const m = missions.find((x) => x.id === e.id);
+      return m && e.done && !e.callback && e.items.some((x) => x.trim()) && addDays(d, m.callbackDays || 3) <= today;
+    }).map(([d]) => d).sort();
+  }
+  // Older saves stored missions by list position; map those to the new ids by title.
+  function upgradeMissions(log, missions, legacyTitles) {
+    for (const [d, e] of Object.entries(log)) {
+      if (typeof e.id === 'string') continue;
+      const title = legacyTitles[e.idx % legacyTitles.length];
+      const m = missions.find((x) => x.title === title);
+      log[d] = Object.assign(blankEntry(m ? m.id : 'legacy', title), { done: !!e.done, notes: typeof e.notes === 'string' ? e.notes : '' });
+    }
+    return log;
   }
 
   // ---------- state / storage ----------
-  const DRILLS = ['glance', 'change', 'scene', 'faces', 'palace', 'reason'];
+  const DRILLS = ['glance', 'change', 'scene', 'faces', 'palace', 'reason', 'convo', 'witness', 'describe', 'numbers', 'estimate'];
   function defaultState() {
     const levels = {};
     DRILLS.forEach((d) => { levels[d] = 1; });
-    return { version: 1, levels, history: [], people: [], palace: { loci: [] }, reason: { seen: {}, calib: [] },
-      missions: {}, seenIntro: {}, intention: '' };
+    return { version: 1, levels, history: [], people: [], palace: { loci: [], last: null }, reason: { seen: {}, calib: [], custom: [] },
+      missions: {}, missionCalib: [], rooms: [], estimate: { asked: 0, contained: 0 }, seenIntro: {}, intention: '' };
   }
+  const isCalib = (r) => r && typeof r.conf === 'number' && typeof r.correct === 'boolean';
+  const strs = (a, n) => Array.isArray(a) && a.length === n && a.every((x) => typeof x === 'string' && x.trim());
+  const isCase = (c) => c && typeof c.id === 'string' && typeof c.text === 'string' && typeof c.q === 'string' && strs(c.options, 4) && typeof c.explain === 'string';
   function migrate(raw) {
     const s = defaultState();
     if (!raw || typeof raw !== 'object') return s;
@@ -118,11 +206,25 @@
     const kind = (v) => (Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v);
     for (const k of Object.keys(s)) if (kind(raw[k]) === kind(s[k])) s[k] = raw[k];
     for (const d of DRILLS) if (typeof s.levels[d] !== 'number' || !(s.levels[d] >= LEVEL_MIN && s.levels[d] <= LEVEL_MAX)) s.levels[d] = 1;
-    if (!Array.isArray(s.palace.loci)) s.palace = { loci: [] };
-    if (!s.reason.seen || typeof s.reason.seen !== 'object' || !Array.isArray(s.reason.calib)) s.reason = { seen: {}, calib: [] };
+    if (!Array.isArray(s.palace.loci)) s.palace = { loci: [], last: null };
+    const last = s.palace.last;
+    s.palace.last = last && Array.isArray(last.words) && last.words.every((w) => typeof w === 'string') && typeof last.date === 'string' ? last : null;
+    if (!s.reason.seen || typeof s.reason.seen !== 'object' || !Array.isArray(s.reason.calib)) s.reason = { seen: {}, calib: [], custom: [] };
+    s.reason.calib = s.reason.calib.filter(isCalib);
+    s.reason.custom = Array.isArray(s.reason.custom) ? s.reason.custom.filter(isCase) : [];
+    s.missionCalib = s.missionCalib.filter(isCalib);
+    s.rooms = s.rooms.filter((r) => r && typeof r.seed === 'number' && typeof r.level === 'number' && typeof r.date === 'string');
+    if (!(s.estimate.asked >= 0 && s.estimate.contained >= 0)) s.estimate = { asked: 0, contained: 0 };
     s.history = s.history.filter((h) => h && typeof h.drill === 'string' && typeof h.date === 'string');
     s.people = s.people.filter((p) => p && typeof p.due === 'string' && (p.source === 'real' ? typeof p.name === 'string' : p.face && typeof p.first === 'string'));
-    for (const [d, m] of Object.entries(s.missions)) if (!m || typeof m.idx !== 'number') delete s.missions[d];
+    for (const [d, m] of Object.entries(s.missions)) {
+      if (!m || (typeof m.id !== 'string' && typeof m.idx !== 'number')) { delete s.missions[d]; continue; }
+      if (typeof m.id !== 'string') continue; // legacy entry: the app upgrades it with upgradeMissions
+      s.missions[d] = Object.assign(blankEntry(m.id, ''), m, {
+        title: String(m.title || ''), notes: String(m.notes || ''),
+        items: Array.isArray(m.items) ? m.items.map(String) : [], people: Array.isArray(m.people) ? m.people.map(String) : [],
+        skipped: Array.isArray(m.skipped) ? m.skipped.filter((x) => typeof x === 'string') : [] });
+    }
     return s;
   }
   // Record a finished round and return the level change.
@@ -136,7 +238,8 @@
   }
 
   const api = { makeRng, seedFrom, freshSeed, nextLevel, byLevel, LEVEL_MIN, LEVEL_MAX, dayKey, addDays, daysBetween,
-    INTERVALS, newCard, reviewCard, isDue, recognitionScore, brier, calibrationTable, daysPracticed, planWorkout, FAMILIES,
+    INTERVALS, newCard, reviewCard, isDue, recognitionScore, brier, calibrationTable, daysPracticed, planWorkout, planCommute, FAMILIES, QUICK,
+    digitScore, maxRatio, scoreRange, blankEntry, missionValue, missionHit, unlockedTier, pickMission, personalBest, dueCallbacks, upgradeMissions,
     DRILLS, defaultState, migrate, recordRound };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else (root.Sharp = root.Sharp || {}).core = api;

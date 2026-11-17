@@ -257,7 +257,81 @@
     return item.keys.some((k) => new RegExp('(^|[^a-z0-9])' + k.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(s|es)?(?![a-z0-9])').test(t));
   }
 
-  const api = { params, makeScene, makeQuestions, sceneSvg, inventory, mentioned, BUILDERS, ITEMS, ODDS };
+  // ---- "a room you've seen before comes back changed" ----
+  // Every statement (change or decoy) is consistent with the changed room, so only memory of the original decides it.
+  const SIMILAR = { red: 'orange', orange: 'red' }; // too close to tell apart at phone size
+  const otherThan = (rng, arr, v) => rng.pick(arr.filter((x) => x !== v && x !== SIMILAR[v]));
+  const SAY = { clock: 'The clock shows a different time.', weather: 'The weather outside changed.',
+    frameShape: 'The framed picture shows a different shape.', frameColor: 'The shape in the framed picture is a different color.',
+    door: 'The door was opened or closed.', lamp: 'The floor lamp was switched on or off.',
+    note: 'The sticky note shows a different number.', calendar: 'The calendar shows a different date.',
+    shirt: "Someone's shirt is a different color.", leave: 'One person is missing.', oddGone: 'Something unusual that was here is gone.' };
+  const oddNew = (o) => 'Something unusual appeared: ' + ODDS[o] + '.';
+  const itemSay = { color: (t) => 'The ' + t + ' is a different color.', gone: (t) => 'The ' + t + ' is gone.', added: (t) => "There's a new " + t + '.' };
+  // Each returns [slot, statement] after changing s, or null if it doesn't apply. One change per slot.
+  const CHANGES = {
+    clock(s, rng) { s.clock.h = ((s.clock.h - 1 + 3 + rng.int(7)) % 12) + 1; return ['clock', SAY.clock]; }, // 3-9 h: hour hand turns >= 90 deg
+    weather(s, rng) { s.weather = otherThan(rng, WEATHER, s.weather); return ['weather', SAY.weather]; },
+    frameShape(s, rng) { s.frame.shape = otherThan(rng, SHAPES, s.frame.shape); return ['frameShape', SAY.frameShape]; },
+    frameColor(s, rng) { s.frame.color = otherThan(rng, ['red', 'blue', 'green', 'yellow', 'purple', 'orange'], s.frame.color); return ['frameColor', SAY.frameColor]; },
+    door(s) { s.door = s.door === 'open' ? 'closed' : 'open'; return ['door', SAY.door]; },
+    lamp(s) { s.lamp = s.lamp === 'on' ? 'off' : 'on'; return ['lamp', SAY.lamp]; },
+    note(s, rng) {
+      if (!s.note) return null;
+      let v;
+      do v = String(1000 + rng.int(9000)); while ([...v].filter((c, i) => c !== s.note[i]).length < 2);
+      s.note = v; return ['note', SAY.note];
+    },
+    calendar(s, rng) { if (!s.calendar) return null; s.calendar.day = 1 + ((s.calendar.day - 1 + 5 + rng.int(19)) % 28); return ['calendar', SAY.calendar]; },
+    odd(s, rng) {
+      if (s.odd === 'nothing') { s.odd = rng.pick(Object.keys(ODDS)); return ['odd', oddNew(s.odd)]; }
+      s.odd = 'nothing'; return ['odd', SAY.oddGone];
+    },
+    shirt(s, rng, used) {
+      if (used.has('people') || !s.people.length) return null;
+      const f = rng.pick(s.people); f.shirt = otherThan(rng, Object.keys(faces.SHIRTS), f.shirt); return ['people', SAY.shirt];
+    },
+    leave(s, rng, used) { if (used.has('people') || s.people.length < 2) return null; s.people.splice(rng.int(s.people.length), 1); return ['people', SAY.leave]; },
+    itemColor(s, rng, used) {
+      const free = s.table.filter((t) => !used.has('item:' + t.type));
+      if (!free.length) return null;
+      const it = rng.pick(free); it.color = otherThan(rng, ITEM_COLORS[it.type], it.color); return ['item:' + it.type, itemSay.color(it.type)];
+    },
+    itemGone(s, rng, used) {
+      const free = s.table.filter((t) => !used.has('item:' + t.type));
+      if (s.table.length < 3 || !free.length) return null;
+      const it = rng.pick(free); s.table.splice(s.table.indexOf(it), 1); return ['item:' + it.type, itemSay.gone(it.type)];
+    },
+    itemAdded(s, rng, used) {
+      const absent = ITEMS.filter((t) => !used.has('item:' + t) && !s.table.some((x) => x.type === t));
+      if (!absent.length) return null;
+      const type = rng.pick(absent); s.table.splice(rng.int(s.table.length + 1), 0, { type, color: rng.pick(ITEM_COLORS[type]) });
+      return ['item:' + type, itemSay.added(type)];
+    },
+  };
+  // Returns { scene: changed copy, changes: k statements, decoys: false statements (shuffled; use the first 6 - k) }.
+  function mutate(scene, rng, k) {
+    const s = JSON.parse(JSON.stringify(scene));
+    const used = new Set(), changes = [];
+    for (const key of rng.shuffle(Object.keys(CHANGES))) {
+      if (changes.length >= k) break;
+      const r = CHANGES[key](s, rng, used);
+      if (r) { used.add(r[0]); changes.push(r[1]); }
+    }
+    const decoys = ['clock', 'weather', 'frameShape', 'frameColor', 'door', 'lamp'].filter((x) => !used.has(x)).map((x) => SAY[x]);
+    if (s.note && !used.has('note')) decoys.push(SAY.note);
+    if (s.calendar && !used.has('calendar')) decoys.push(SAY.calendar);
+    if (!used.has('people')) decoys.push(SAY.shirt, SAY.leave);
+    if (!used.has('odd')) decoys.push(s.odd === 'nothing' ? SAY.oddGone : oddNew(s.odd));
+    for (const t of ITEMS) {
+      if (used.has('item:' + t)) continue;
+      if (s.table.some((x) => x.type === t)) decoys.push(itemSay.color(t), itemSay.added(t)); // there all along: not new, same color
+      else decoys.push(itemSay.gone(t)); // never there: can't be gone
+    }
+    return { scene: s, changes, decoys: rng.shuffle(decoys) };
+  }
+
+  const api = { params, makeScene, makeQuestions, sceneSvg, inventory, mentioned, mutate, BUILDERS, ITEMS, ODDS };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else (root.Sharp = root.Sharp || {}).scene = api;
 })(typeof window !== 'undefined' ? window : globalThis);
