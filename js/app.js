@@ -476,15 +476,24 @@
     const face = faces.makePeople(rng, 1, [])[0].face;
     let replays = p.replays;
     const go2 = h('button', { class: 'primary', onclick: () => quiz() }, 'I\'m done listening');
+    let started = false;
     function listen() {
-      speechSynthesis.cancel();
+      // Cancel only when something is queued: Safari can silently drop a speak() issued right after cancel().
+      if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+      started = false;
       // one utterance per sentence: long single utterances get cut off in some browsers
       intro.sentences.forEach((text, i) => {
         const u = new SpeechSynthesisUtterance(text);
         u.rate = p.rate; u.lang = 'en-US';
+        u.onstart = () => { started = true; };
         if (i === intro.sentences.length - 1) u.onend = () => { go2.textContent = 'On to the questions'; go2.focus(); };
         speechSynthesis.speak(u);
       });
+      speechSynthesis.resume(); // Chrome can leave the queue paused after a tab was in the background
+      // A muted phone or a missing voice fails without any error, so check whether speech actually began.
+      later(() => { if (!started && main.querySelector('.hear')) main.querySelector('.hear').replaceChildren(
+        h('b', {}, 'No sound is playing. '), 'Check your volume, and on an iPhone make sure the side switch isn\'t on silent. Or ',
+        h('button', { class: 'small primary', onclick: () => start('read') }, 'read it instead')); }, 2500);
     }
     const replayBtn = h('button', { onclick: () => { if (replays-- > 0) listen(); if (replays <= 0) replayBtn.remove(); } }, 'Replay once');
     function start(mode) {
@@ -498,7 +507,7 @@
       } else {
         render(card(h('div', { class: 'visual', html: faces.faceSvg(face, 150) }), h('p', { class: 'muted center' }, intro.setting + '. Listen; the words won\'t be shown.'),
           h('div', { class: 'row center' }, go2, replays > 0 ? replayBtn : null),
-          h('p', { class: 'muted center' }, 'Can\'t hear anything? ', h('button', { class: 'small', onclick: () => start('read') }, 'Read it instead'))));
+          h('p', { class: 'muted center hear', 'aria-live': 'polite' }, 'Can\'t hear anything? ', h('button', { class: 'small', onclick: () => start('read') }, 'Read it instead'))));
         go2.focus();
         listen();
       }
