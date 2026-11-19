@@ -471,7 +471,13 @@
 
   // ---------- Conversation Recall ----------
   const canSpeak = () => 'speechSynthesis' in window && typeof SpeechSynthesisUtterance === 'function';
+  // Prefer a voice installed on the device: Chrome's and Edge's online voices can fail silently and never work offline.
+  const pickVoice = () => {
+    const en = speechSynthesis.getVoices().filter((v) => /^en[-_]/i.test(v.lang));
+    return en.find((v) => v.localService && /^en[-_]US$/i.test(v.lang)) || en.find((v) => v.localService) || null;
+  };
   function runConvo(end) {
+    if (canSpeak()) speechSynthesis.getVoices(); // Chrome fills the voice list asynchronously; ask early so it's ready by "Listen"
     const L = state.levels.convo, rng = core.makeRng(core.freshSeed()), p = convo.params(L), intro = convo.makeIntro(rng, L);
     const face = faces.makePeople(rng, 1, [])[0].face;
     let replays = p.replays;
@@ -481,10 +487,12 @@
       // Cancel only when something is queued: Safari can silently drop a speak() issued right after cancel().
       if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
       started = false;
+      const voice = pickVoice();
       // one utterance per sentence: long single utterances get cut off in some browsers
       intro.sentences.forEach((text, i) => {
         const u = new SpeechSynthesisUtterance(text);
         u.rate = p.rate; u.lang = 'en-US';
+        if (voice) u.voice = voice;
         u.onstart = () => { started = true; };
         if (i === intro.sentences.length - 1) u.onend = () => { go2.textContent = 'On to the questions'; go2.focus(); };
         speechSynthesis.speak(u);
